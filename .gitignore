@@ -9,6 +9,7 @@ build/
 
 # 敏感配置
 .env
+web/users.json
 
 # IDE
 .vscode/
