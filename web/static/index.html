@@ -220,9 +220,15 @@
             <span class="title">Agent Chat</span>
             <span class="agent-badge" id="agentBadge" style="display:none"></span>
             <span class="subtitle" id="convSubtitle"></span>
+            <select class="model-select" id="agentMode" onchange="onAgentModeChange()" style="width:auto">
+                <option value="normal">💬 普通对话</option>
+                <option value="react">🔧 Agent 模式</option>
+                <option value="plan_solve">📋 规划模式</option>
+                <option value="reflection">🔄 反思模式</option>
+            </select>
             <select class="model-select" id="modelSelect" onchange="onModelChange()">
-                <option value="chat">⚡ 快速模式</option>
-                <option value="reasoner">🧠 深度思考</option>
+                <option value="chat">⚡ 快速</option>
+                <option value="reasoner">🧠 深度</option>
             </select>
         </div>
 
@@ -291,7 +297,7 @@ const agentListEl=document.getElementById('agentList'),defaultAgentItem=document
 const agentModal=document.getElementById('agentModal'),editAgentId=document.getElementById('editAgentId');
 
 let isLoginMode=true,token='',username='',conversations=[],currentConvId=null,isStreaming=false;
-let attachments=[],agents=[],currentAgentId=null,selectedModel='chat';
+let attachments=[],agents=[],currentAgentId=null,selectedModel='chat',agentMode='normal';
 const tokenBarWrap=document.getElementById('tokenBarWrap'),tokenBarFill=document.getElementById('tokenBarFill'),tokenLabel=document.getElementById('tokenLabel');
 
 // ============================================================
@@ -499,6 +505,7 @@ function closeSidebar(){sidebarEl.classList.remove('open');overlayEl.classList.r
 function scrollBottom(){messagesDiv.scrollTop=messagesDiv.scrollHeight}
 function handleKeyDown(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
 function onModelChange(){selectedModel=modelSelect.value}
+function onAgentModeChange(){agentMode=document.getElementById('agentMode').value}
 userInput.addEventListener('input',()=>{userInput.style.height='auto';userInput.style.height=Math.min(userInput.scrollHeight,120)+'px'});
 
 // ============================================================
@@ -552,11 +559,34 @@ async function sendMessage(){
 
     const typingRow=addTyping();
     try{
-        const resp=await fetch('/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs,model:selectedModel})});
+        const isAgent=agentMode!=='normal';
+        const url=isAgent?'/api/agent/stream':'/api/chat/stream';
+        const resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs,model:selectedModel,mode:agentMode})});
         if(!resp.ok)throw new Error(`服务器错误 ${resp.status}`);
         typingRow.remove();const aiBubble=addMsgBubble('ai','');let full='';
         const reader=resp.body.getReader(),decoder=new TextDecoder();let buf='';
-        while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n\n');buf=lines.pop();for(const line of lines){if(!line.startsWith('data: '))continue;let d;try{d=JSON.parse(line.slice(6))}catch(e){continue}if(d.done){cv.messages.push({role:'assistant',content:d.full_reply||full});if(d.token_info)updateTokenBar(d.token_info)}else if(d.token_info){updateTokenBar(d.token_info)}else if(d.token){full+=d.token;aiBubble.textContent=full;scrollBottom()}}}
+        while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n\n');buf=lines.pop();for(const line of lines){if(!line.startsWith('data: '))continue;let d;try{d=JSON.parse(line.slice(6))}catch(e){continue}
+            // Agent 模式事件
+            if(d.type==='step'){
+                const s=document.createElement('div');s.className='msg-row ai';
+                s.innerHTML='<div class=\"bubble\" style=\"font-size:12px;background:#fff3cd;color:#856404;margin-bottom:4px\">🔧 <b>'+d.step.action+'</b><br>📋 '+d.step.observation.slice(0,300)+'</div>';
+                messagesDiv.appendChild(s);scrollBottom();
+            }else if(d.type==='plan'){
+                const p=document.createElement('div');p.className='msg-row ai';
+                p.innerHTML='<div class=\"bubble\" style=\"font-size:12px;background:#d1ecf1;color:#0c5460\">📋 <b>计划</b><br>'+d.plan.map((s,i)=>(i+1)+'. '+s).join('<br>')+'</div>';
+                messagesDiv.appendChild(p);scrollBottom();
+            }else if(d.type==='reflections'){
+                const r=document.createElement('div');r.className='msg-row ai';
+                r.innerHTML='<div class=\"bubble\" style=\"font-size:12px;background:#f8d7da;color:#721c24\">🔄 <b>反思</b><br>'+d.reflections.join('<br>')+'</div>';
+                messagesDiv.appendChild(r);scrollBottom();
+            }else if(d.type==='answer'){
+                aiBubble.textContent=d.answer;full=d.answer;scrollBottom();
+            }else if(d.done){
+                cv.messages.push({role:'assistant',content:d.full_reply||full});if(d.token_info)updateTokenBar(d.token_info,d.cache)
+            }else if(d.token_info){updateTokenBar(d.token_info,d.cache)}else if(d.token){
+                if(!aiBubble||aiBubble.parentElement===null){aiBubble=addMsgBubble('ai','')}
+                full+=d.token;aiBubble.textContent=full;scrollBottom()
+            }}}
     }catch(e){typingRow.remove();addMsgToDOM('ai','❌ '+e.message)}
     finally{cv.updatedAt=Date.now();saveConvs();renderSidebar();sendBtnEl.disabled=false;isStreaming=false;userInput.focus()}
 }
@@ -567,20 +597,21 @@ function addTyping(){const row=document.createElement('div');row.className='msg-
 // ============================================================
 // Token 用量条
 // ============================================================
-function updateTokenBar(info){
+function updateTokenBar(info,cacheInfo){
     if(!info)return;
     tokenBarWrap.style.display='flex';
     const pct=Math.min(100,Math.round((info.after||info.before)*100/info.max));
     tokenBarFill.style.width=pct+'%';
-    // 颜色分级
     tokenBarFill.className='token-bar-fill '+(pct<60?'low':pct<80?'mid':'high');
-    // 标签
     const a=info.after||info.before;
-    tokenLabel.textContent=(a>=1000?(a/1000).toFixed(0)+'K':a)+' / '+(info.max/1000).toFixed(0)+'K';
-    if(info.compressed){
-        tokenLabel.textContent+=' ⚡已压缩';
-        setTimeout(()=>{tokenLabel.textContent=tokenLabel.textContent.replace(' ⚡已压缩','')},3000);
+    let label=(a>=1000?(a/1000).toFixed(0)+'K':a)+' / '+(info.max/1000).toFixed(0)+'K';
+    // 缓存命中率
+    if(cacheInfo&&cacheInfo.total_prompt>0){
+        const rate=Math.round(cacheInfo.hit_rate*100);
+        if(rate>0)label+=' 💾'+rate+'%';
     }
+    if(info.compressed){label+=' ⚡已压缩';setTimeout(()=>{tokenLabel.textContent=tokenLabel.textContent.replace(' ⚡已压缩','')},3000)}
+    tokenLabel.textContent=label;
 }
 
 // ============================================================

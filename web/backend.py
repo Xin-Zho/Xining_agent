@@ -33,6 +33,12 @@ from chat.llm_client import LLMClient
 from chat.config import LLM_REASONER_ID
 from chat.context_manager import ContextManager, count_messages_tokens, MAX_TOKENS
 
+from agent_framework.tools.registry import ToolRegistry
+from agent_framework.tools.builtin_tools import read_file, execute_command, web_search
+from agent_framework.core.agent_loop import ReactAgent
+from agent_framework.core.planner import PlanAndSolveAgent
+from agent_framework.core.reflector import ReflectionAgent
+
 # ============================================================
 # 初始化
 # ============================================================
@@ -45,12 +51,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 两个客户端：快速模式和深度思考模式
+# LLM 客户端
 fast_client = LLMClient()                     # deepseek-chat
 reasoner_client = LLMClient(LLM_REASONER_ID)  # deepseek-reasoner
 
-# 上下文管理器（用快速模型做摘要，节省成本）
+# 上下文管理器
 ctx_manager = ContextManager(fast_client)
+
+# 工具注册表 + 注册内置工具
+tool_registry = ToolRegistry()
+tool_registry.register(
+    "read_file", "读取指定路径的文件内容",
+    {"path": {"type": "string", "description": "文件路径（相对或绝对）"}},
+    read_file
+)
+tool_registry.register(
+    "execute_command", "执行 Shell 命令（白名单限制，危险命令被阻止）",
+    {"command": {"type": "string", "description": "要执行的命令"}},
+    execute_command
+)
+tool_registry.register(
+    "web_search", "搜索互联网获取信息",
+    {"query": {"type": "string", "description": "搜索关键词"}},
+    web_search
+)
+
+# Agent 实例
+react_agent = ReactAgent(fast_client, tool_registry, max_turns=10)
+plan_agent = PlanAndSolveAgent(fast_client, tool_registry, max_steps=5)
+reflection_agent = ReflectionAgent(fast_client, tool_registry, max_iterations=3)
 
 # ============================================================
 # 用户数据存储
@@ -177,7 +206,8 @@ async def chat(req: ChatRequest):
     # Context 管理：压缩超长消息
     compressed, token_info = ctx_manager.maybe_compress(req.messages)
     reply = cl.chat(compressed)
-    return {"reply": reply, "token_info": token_info}
+    cache = cl.get_cache_info()
+    return {"reply": reply, "token_info": token_info, "cache": cache}
 
 
 @app.post("/api/chat/stream")
@@ -194,7 +224,8 @@ async def chat_stream(req: ChatRequest):
         for token in cl.chat_stream(compressed):
             full_reply += token
             yield f"data: {json.dumps({'token': token})}\n\n"
-        yield f"data: {json.dumps({'done': True, 'full_reply': full_reply, 'token_info': token_info})}\n\n"
+        cache = cl.get_cache_info()
+        yield f"data: {json.dumps({'done': True, 'full_reply': full_reply, 'token_info': token_info, 'cache': cache})}\n\n"
 
     return StreamingResponse(
         generate(),
@@ -204,6 +235,113 @@ async def chat_stream(req: ChatRequest):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         }
+    )
+
+
+# ============================================================
+# Agent 接口（ReAct / Plan-Solve / Reflection）
+# ============================================================
+
+class AgentRequest(BaseModel):
+    messages: list[dict]
+    model: str = "chat"
+    mode: str = "react"  # "react" | "plan_solve" | "reflection"
+
+
+@app.post("/api/agent/run")
+async def agent_run(req: AgentRequest):
+    """Agent 非流式执行"""
+    cl = reasoner_client if req.model == "reasoner" else fast_client
+    user_msg = req.messages[-1]["content"] if req.messages else ""
+
+    # 重建 Agent 实例（使用正确的 LLM 客户端）
+    agent_reg = ToolRegistry()
+    agent_reg.register("read_file", "读取文件", {"path": {"type": "string", "description": "文件路径"}}, read_file)
+    agent_reg.register("execute_command", "执行命令", {"command": {"type": "string", "description": "命令"}}, execute_command)
+    agent_reg.register("web_search", "搜索网页", {"query": {"type": "string", "description": "关键词"}}, web_search)
+
+    if req.mode == "plan_solve":
+        agent = PlanAndSolveAgent(cl, agent_reg)
+        result = agent.run(user_msg)
+    elif req.mode == "reflection":
+        agent = ReflectionAgent(cl, agent_reg)
+        result = agent.run(user_msg)
+        result["plan"] = []
+    else:
+        agent = ReactAgent(cl, agent_reg)
+        result = agent.run(user_msg)
+        result["plan"] = []
+        result["reflections"] = []
+
+    return {"ok": True, **result}
+
+
+@app.post("/api/agent/stream")
+async def agent_stream(req: AgentRequest):
+    """Agent 流式执行 — SSE 格式，每步思考过程实时推送给前端"""
+    cl = reasoner_client if req.model == "reasoner" else fast_client
+    user_msg = req.messages[-1]["content"] if req.messages else ""
+
+    # 重建 Agent
+    agent_reg = ToolRegistry()
+    agent_reg.register("read_file", "读取文件", {"path": {"type": "string", "description": "文件路径"}}, read_file)
+    agent_reg.register("execute_command", "执行命令", {"command": {"type": "string", "description": "命令"}}, execute_command)
+    agent_reg.register("web_search", "搜索网页", {"query": {"type": "string", "description": "关键词"}}, web_search)
+
+    if req.mode == "plan_solve":
+        agent = PlanAndSolveAgent(cl, agent_reg)
+    elif req.mode == "reflection":
+        agent = ReflectionAgent(cl, agent_reg)
+    else:
+        agent = ReactAgent(cl, agent_reg)
+
+    def generate():
+        # 发送开始信号
+        yield f"data: {json.dumps({'type': 'start', 'mode': req.mode})}\n\n"
+
+        import threading
+        result_holder = {}
+        error_holder = {}
+
+        def run_agent():
+            try:
+                result_holder["data"] = agent.run(user_msg)
+            except Exception as e:
+                error_holder["error"] = str(e)
+
+        # 在后台线程运行 Agent
+        thread = threading.Thread(target=run_agent)
+        thread.start()
+
+        # 等待并检查进度（简化版：等线程完成）
+        thread.join(timeout=120)
+
+        if error_holder.get("error"):
+            yield f"data: {json.dumps({'type': 'error', 'error': error_holder['error']})}\n\n"
+            return
+
+        result = result_holder.get("data", {})
+
+        # 发送思考步骤
+        if "plan" in result and result["plan"]:
+            yield f"data: {json.dumps({'type': 'plan', 'plan': result['plan']})}\n\n"
+
+        for step in result.get("steps", []):
+            yield f"data: {json.dumps({'type': 'step', 'step': step})}\n\n"
+
+        if "reflections" in result and result.get("reflections"):
+            yield f"data: {json.dumps({'type': 'reflections', 'reflections': result['reflections']})}\n\n"
+
+        # 发送最终回答
+        answer = result.get("answer", "")
+        yield f"data: {json.dumps({'type': 'answer', 'answer': answer})}\n\n"
+        cache = cl.get_cache_info()
+        yield f"data: {json.dumps({'done': True, 'full_reply': answer, 'cache': cache})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
     )
 
 
