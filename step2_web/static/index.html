@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Chat</title>
+    <style>
+        /* ==========================================
+           CSS 变量 — 统一管理颜色，改一处全改
+           ========================================== */
+        :root {
+            --bg: #f5f5f5;           /* 页面背景 */
+            --card-bg: #ffffff;       /* 聊天区域背景 */
+            --user-bubble: #007aff;   /* 用户气泡（蓝色） */
+            --user-text: #ffffff;     /* 用户文字 */
+            --ai-bubble: #e9e9eb;    /* AI 气泡（灰色） */
+            --ai-text: #1c1c1e;      /* AI 文字 */
+            --border: #e0e0e0;       /* 边框颜色 */
+            --input-bg: #ffffff;     /* 输入框背景 */
+            --header-bg: #1a1a2e;    /* 顶部栏背景 */
+            --header-text: #ffffff;  /* 顶部栏文字 */
+            --send-btn: #007aff;     /* 发送按钮 */
+            --send-btn-hover: #0056cc;
+            --radius: 18px;          /* 气泡圆角 */
+            --shadow: 0 2px 12px rgba(0,0,0,0.08);
+        }
+
+        /* ==========================================
+           基础重置
+           ========================================== */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: var(--bg);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        /* ==========================================
+           聊天容器 — 卡片式，居中
+           ========================================== */
+        .chat-container {
+            width: 100%;
+            max-width: 800px;
+            height: 90vh;
+            background: var(--card-bg);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ==========================================
+           顶部标题栏
+           ========================================== */
+        .chat-header {
+            background: var(--header-bg);
+            color: var(--header-text);
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+        .chat-header .dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: #34c759;
+            display: inline-block;
+        }
+        .chat-header h1 {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .chat-header .model-tag {
+            font-size: 12px;
+            opacity: 0.7;
+            margin-left: auto;
+        }
+
+        /* ==========================================
+           消息区域 — 可滚动，flex-grow 填满剩余空间
+           ========================================== */
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* 滚动条美化 */
+        .messages::-webkit-scrollbar { width: 6px; }
+        .messages::-webkit-scrollbar-thumb {
+            background: #ccc;
+            border-radius: 3px;
+        }
+
+        /* ==========================================
+           消息行 — 用户靠右，AI 靠左
+           ========================================== */
+        .message-row {
+            display: flex;
+            max-width: 85%;
+            animation: fadeIn 0.3s ease;
+        }
+        .message-row.user {
+            align-self: flex-end;
+        }
+        .message-row.ai {
+            align-self: flex-start;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ==========================================
+           气泡样式
+           ========================================== */
+        .bubble {
+            padding: 12px 18px;
+            border-radius: var(--radius);
+            line-height: 1.6;
+            word-break: break-word;     /* 长文本自动换行 */
+            white-space: pre-wrap;      /* 保留换行，自动换行 */
+        }
+        .user .bubble {
+            background: var(--user-bubble);
+            color: var(--user-text);
+            border-bottom-right-radius: 4px;
+        }
+        .ai .bubble {
+            background: var(--ai-bubble);
+            color: var(--ai-text);
+            border-bottom-left-radius: 4px;
+        }
+
+        /* AI 加载动画（三个跳动的点） */
+        .typing-indicator {
+            display: flex;
+            gap: 4px;
+            padding: 12px 18px;
+        }
+        .typing-indicator span {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #999;
+            animation: bounce 1.4s infinite ease-in-out;
+        }
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-8px); }
+        }
+
+        /* ==========================================
+           输入区域 — 贴在底部
+           ========================================== */
+        .input-area {
+            border-top: 1px solid var(--border);
+            padding: 16px 24px;
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+            flex-shrink: 0;
+            background: var(--card-bg);
+        }
+
+        .input-area textarea {
+            flex: 1;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 10px 16px;
+            font-size: 15px;
+            font-family: inherit;
+            resize: none;
+            outline: none;
+            max-height: 120px;
+            line-height: 1.5;
+            transition: border-color 0.2s;
+        }
+        .input-area textarea:focus {
+            border-color: var(--send-btn);
+        }
+
+        .input-area button {
+            background: var(--send-btn);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 10px 20px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .input-area button:hover { background: var(--send-btn-hover); }
+        .input-area button:disabled {
+            background: #aaa;
+            cursor: not-allowed;
+        }
+
+        /* ==========================================
+           响应式 — 手机端全屏
+           ========================================== */
+        @media (max-width: 600px) {
+            .chat-container {
+                height: 100vh;
+                max-width: 100%;
+                border-radius: 0;
+            }
+            .message-row { max-width: 92%; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- =========================== HTML 结构 =========================== -->
+<div class="chat-container">
+
+    <!-- 顶部栏 -->
+    <div class="chat-header">
+        <span class="dot"></span>
+        <h1>Agent Chat</h1>
+        <span class="model-tag">DeepSeek</span>
+    </div>
+
+    <!-- 消息列表 -->
+    <div class="messages" id="messages">
+        <!-- 欢迎消息 -->
+        <div class="message-row ai">
+            <div class="bubble">
+👋 你好！我是 AI 助手，有什么可以帮你的？
+            </div>
+        </div>
+    </div>
+
+    <!-- 输入区域 -->
+    <div class="input-area">
+        <textarea id="userInput" rows="1"
+                  placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+                  onkeydown="handleKeyDown(event)"></textarea>
+        <button id="sendBtn" onclick="sendMessage()">发送</button>
+    </div>
+</div>
+
+<!-- =========================== JS 逻辑 =========================== -->
+<script>
+// ============================================================
+// 状态管理
+// ============================================================
+// messages 数组格式: [{"role": "user", "content": "..."}, ...]
+// 这个格式直接传给后端，不需要转换
+let messages = [];
+let isStreaming = false;  // 防止流式回复时重复发送
+
+// ============================================================
+// DOM 元素引用
+// ============================================================
+const messagesDiv = document.getElementById('messages');
+const userInput = document.getElementById('userInput');
+const sendBtn = document.getElementById('sendBtn');
+
+// ============================================================
+// 键盘事件：Enter 发送，Shift+Enter 换行
+// ============================================================
+function handleKeyDown(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+    }
+}
+
+// ============================================================
+// 自适应文本框高度
+// ============================================================
+userInput.addEventListener('input', () => {
+    userInput.style.height = 'auto';
+    userInput.style.height = Math.min(userInput.scrollHeight, 120) + 'px';
+});
+
+// ============================================================
+// 添加消息气泡到页面
+// ============================================================
+function addMessageBubble(role, content = '') {
+    const row = document.createElement('div');
+    row.className = `message-row ${role}`;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = content;
+
+    row.appendChild(bubble);
+    messagesDiv.appendChild(row);
+    scrollToBottom();
+    return bubble;  // 返回气泡元素引用（流式更新用）
+}
+
+// ============================================================
+// 添加"正在输入"指示器
+// ============================================================
+function addTypingIndicator() {
+    const row = document.createElement('div');
+    row.className = 'message-row ai';
+    row.id = 'typing-indicator';
+
+    const indicator = document.createElement('div');
+    indicator.className = 'typing-indicator';
+    indicator.innerHTML = '<span></span><span></span><span></span>';
+
+    row.appendChild(indicator);
+    messagesDiv.appendChild(row);
+    scrollToBottom();
+}
+
+// ============================================================
+// 移除"正在输入"指示器
+// ============================================================
+function removeTypingIndicator() {
+    const el = document.getElementById('typing-indicator');
+    if (el) el.remove();
+}
+
+// ============================================================
+// 滚动到最底部
+// ============================================================
+function scrollToBottom() {
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+// ============================================================
+// 核心：发送消息（流式模式）
+// ============================================================
+async function sendMessage() {
+    const text = userInput.value.trim();
+    if (!text || isStreaming) return;
+
+    // 1. 清空输入框
+    userInput.value = '';
+    userInput.style.height = 'auto';
+    sendBtn.disabled = true;
+    isStreaming = true;
+
+    // 2. 添加用户消息到页面和消息列表
+    addMessageBubble('user', text);
+    messages.push({"role": "user", "content": text});
+
+    // 3. 显示"正在输入"动画
+    addTypingIndicator();
+
+    try {
+        // 4. 发流式请求
+        const response = await fetch('/api/chat/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages: messages })
+        });
+
+        if (!response.ok) {
+            throw new Error(`服务器错误: ${response.status}`);
+        }
+
+        // 5. 移除输入动画，准备接收流式内容
+        removeTypingIndicator();
+
+        // 6. 创建空气泡，准备逐字填充
+        const aiBubble = addMessageBubble('ai', '');
+        let fullContent = '';
+
+        // 7. 读取 SSE 流
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';  // 缓冲区：处理不完整的 SSE 数据
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // SSE 数据以 \n\n 分隔，逐条处理
+            const lines = buffer.split('\n\n');
+            buffer = lines.pop();  // 最后一段可能不完整，留下次处理
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const jsonStr = line.slice(6);  // 去掉 "data: " 前缀
+
+                let data;
+                try {
+                    data = JSON.parse(jsonStr);
+                } catch (e) {
+                    continue;  // 解析失败，跳过
+                }
+
+                if (data.done) {
+                    // 流结束，保存完整回复
+                    messages.push({"role": "assistant", "content": data.full_reply || fullContent});
+                } else if (data.token) {
+                    // 追 token 到气泡
+                    fullContent += data.token;
+                    aiBubble.textContent = fullContent;
+                    scrollToBottom();
+                }
+            }
+        }
+    } catch (error) {
+        removeTypingIndicator();
+        addMessageBubble('ai', `❌ 出错了：${error.message}`);
+        console.error('发送失败:', error);
+    } finally {
+        // 8. 恢复输入状态
+        sendBtn.disabled = false;
+        isStreaming = false;
+        userInput.focus();
+    }
+}
+</script>
+
+</body>
+</html>
