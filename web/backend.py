@@ -375,6 +375,63 @@ async def agent_stream(req: AgentRequest):
 
 
 # ============================================================
+# Claude Code CLI 管道（直通，不走 Agent 循环）
+# ============================================================
+
+@app.post("/api/claude/stream")
+async def claude_stream(req: ChatRequest):
+    """
+    Claude Code CLI 管道模式：
+    直接把用户消息喂给 claude -p，stdout 实时流回前端。
+    跳过 Agent 循环，纯管道。
+    """
+    import subprocess
+    import re
+
+    # 取最后一条用户消息
+    user_msg = ""
+    for m in reversed(req.messages):
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, list):
+                user_msg = " ".join(p.get("text", "") for p in content if p.get("type") == "text")
+            else:
+                user_msg = str(content)
+            break
+
+    if not user_msg:
+        user_msg = "(empty)"
+
+    def generate():
+        try:
+            proc = subprocess.Popen(
+                [os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "claude.cmd"),
+                 "-p", user_msg, "--output-format", "text"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            ansi_re = re.compile(r'\x1b\[[0-9;]*m')
+            for line in proc.stdout:
+                clean = ansi_re.sub('', line)
+                if clean.strip():
+                    yield f"data: {json.dumps({'token': clean})}\n\n"
+            proc.wait()
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except FileNotFoundError:
+            yield f"data: {json.dumps({'error': 'Claude Code CLI 未安装，请运行 npm install -g @anthropic-ai/claude-code'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+    )
+
+
+# ============================================================
 # 文件上传接口
 # ============================================================
 

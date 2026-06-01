@@ -225,6 +225,7 @@
                 <option value="react">🔧 Agent 模式</option>
                 <option value="plan_solve">📋 规划模式</option>
                 <option value="reflection">🔄 反思模式</option>
+                <option value="claude">🟣 Claude</option>
             </select>
             <select class="model-select" id="modelSelect" onchange="onModelChange()">
                 <option value="chat">⚡ 快速</option>
@@ -559,9 +560,20 @@ async function sendMessage(){
 
     const typingRow=addTyping();
     try{
-        const isAgent=agentMode!=='normal';
-        const url=isAgent?'/api/agent/stream':'/api/chat/stream';
-        const resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs,model:selectedModel,mode:agentMode})});
+        const isClaude=agentMode==='claude';
+        const isAgent=agentMode!=='normal'&&!isClaude;
+        let url,body;
+        if(isClaude){
+            url='/api/claude/stream';
+            body=JSON.stringify({messages:msgs,model:selectedModel});
+        }else if(isAgent){
+            url='/api/agent/stream';
+            body=JSON.stringify({messages:msgs,model:selectedModel,mode:agentMode});
+        }else{
+            url='/api/chat/stream';
+            body=JSON.stringify({messages:msgs,model:selectedModel});
+        }
+        const resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body});
         if(!resp.ok)throw new Error(`服务器错误 ${resp.status}`);
         typingRow.remove();const aiBubble=addMsgBubble('ai','');let full='';
         const reader=resp.body.getReader(),decoder=new TextDecoder();let buf='';
