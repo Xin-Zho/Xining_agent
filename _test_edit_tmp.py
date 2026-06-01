@@ -1,2 +1,0 @@
-hi universe
-foo bar
