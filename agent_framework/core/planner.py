@@ -104,11 +104,29 @@ class PlanAndSolveAgent:
         ]
         answer = self.client.chat(summary_messages)
 
+        # 自动反思
+        reflection = self._reflect(user_message, answer)
+
         return {
             "answer": answer,
             "plan": plan,
-            "steps": results
+            "steps": results,
+            "reflection": reflection
         }
+
+    def _reflect(self, user_question: str, answer: str) -> str:
+        """自动反思检查。返回 'pass' 或改进建议。"""
+        try:
+            prompt = (
+                f"用一句话评估以下回答是否准确完整。"
+                f"如果回答没问题，只回复'pass'。如果有问题，指出关键缺失。\n\n"
+                f"用户问题：{user_question}\n"
+                f"回答：{answer[:2000]}"
+            )
+            result = self.client.chat([{"role": "user", "content": prompt}])
+            return result.strip()
+        except Exception:
+            return "pass"
 
     def _format_tools(self) -> str:
         if not self.registry.list_tools():

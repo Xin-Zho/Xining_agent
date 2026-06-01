@@ -170,13 +170,15 @@ class ReactAgent:
                         "content": observation
                     })
             else:
-                # 最终回答
+                # 最终回答 → 自动反思检查
                 answer = msg.content or ""
+                reflection = self._reflect(user_message, answer)
                 return {
                     "answer": answer,
                     "steps": steps,
                     "turns": turn,
                     "total_tokens": total_tokens,
+                    "reflection": reflection,
                     "truncated": total_tokens > TOKEN_BUDGET
                 }
 
@@ -186,13 +188,29 @@ class ReactAgent:
             "content": "轮次已用完。请基于以上信息，用一句话给出最终回答。"
         })
         final = self.client.chat(messages)
+        reflection = self._reflect(user_message, final)
         return {
             "answer": final,
             "steps": steps,
             "turns": self.max_turns,
             "total_tokens": total_tokens,
+            "reflection": reflection,
             "truncated": True
         }
+
+    def _reflect(self, user_question: str, answer: str) -> str:
+        """自动反思：检查回答是否足够好。返回 'pass' 或改进建议。"""
+        try:
+            prompt = (
+                f"请用一句话评估以下回答是否准确完整。"
+                f"如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。\n\n"
+                f"用户问题：{user_question}\n"
+                f"回答：{answer[:2000]}"
+            )
+            result = self.client.chat([{"role": "user", "content": prompt}])
+            return result.strip()
+        except Exception:
+            return "pass"  # 反思失败不阻塞
 
     def _smart_truncate(self, text: str, max_tokens: int = MAX_OBS_TOKENS) -> str:
         """

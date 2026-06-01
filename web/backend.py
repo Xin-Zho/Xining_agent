@@ -319,8 +319,6 @@ async def agent_stream(req: AgentRequest):
 
     if req.mode == "plan_solve":
         agent = PlanAndSolveAgent(cl, tool_registry)
-    elif req.mode == "reflection":
-        agent = ReflectionAgent(cl, tool_registry)
     else:
         agent = ReactAgent(cl, tool_registry)
 
