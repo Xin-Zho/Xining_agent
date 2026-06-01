@@ -34,7 +34,7 @@ from chat.config import LLM_REASONER_ID
 from chat.context_manager import ContextManager, count_messages_tokens, MAX_TOKENS
 
 from agent_framework.tools.registry import ToolRegistry
-from agent_framework.tools.builtin_tools import read_file, execute_command, web_search
+from agent_framework.tools.builtin_tools import read_file, execute_command, web_search, grep_files, edit_file, glob_files
 from agent_framework.core.agent_loop import ReactAgent
 from agent_framework.core.planner import PlanAndSolveAgent
 from agent_framework.core.reflector import ReflectionAgent
@@ -77,6 +77,36 @@ tool_registry.register(
     "搜索互联网获取信息。用来查实时信息、API 文档、解决方案。示例：web_search(query='Python asyncio tutorial')",
     {"query": {"type": "string", "description": "搜索关键词，英文更精准，如 'python read file example'"}},
     web_search
+)
+# 代码专用工具
+tool_registry.register(
+    "grep_files",
+    "用正则表达式搜索文件内容，返回 file:line:content 格式。比 execute_command('grep') 更快更准确。示例：grep_files(pattern='TODO', glob='*.py')",
+    {
+        "pattern": {"type": "string", "description": "正则表达式，如 'TODO|FIXME' 或 'class\\\\s+\\\\w+'"},
+        "glob": {"type": "string", "description": "可选，文件名过滤，如 '*.py' 或 '*.{js,ts}'"},
+        "path": {"type": "string", "description": "可选，搜索目录，默认项目根目录。如 'src/'"}
+    },
+    grep_files
+)
+tool_registry.register(
+    "edit_file",
+    "精确字符串替换：在文件中找到 old_string 并替换为 new_string。old_string 必须唯一（防止误改）。示例：edit_file(file_path='app.py', old_string='print(1)', new_string='print(2)')",
+    {
+        "file_path": {"type": "string", "description": "要编辑的文件路径，如 'web/backend.py'"},
+        "old_string": {"type": "string", "description": "要替换的原字符串，必须与文件中完全一致（含空白），且在文件中唯一"},
+        "new_string": {"type": "string", "description": "替换后的新字符串"}
+    },
+    edit_file
+)
+tool_registry.register(
+    "glob_files",
+    "用 glob 模式匹配文件名。示例：glob_files(pattern='**/*.py') 找出所有 Python 文件",
+    {
+        "pattern": {"type": "string", "description": "glob 模式，如 '*.py'、'**/*.md'、'src/**/*.ts'"},
+        "path": {"type": "string", "description": "可选，搜索起始目录，默认项目根目录"}
+    },
+    glob_files
 )
 
 # Agent 实例

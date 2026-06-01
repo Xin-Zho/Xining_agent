@@ -1,11 +1,13 @@
 """
-内置工具：读文件、执行命令、搜索网页
+内置工具：读文件、执行命令、搜索网页、搜索代码、精确编辑、文件匹配
 
 安全限制：
-- read_file: 限制路径在项目目录内，最大 50KB
-- execute_command: 白名单命令，禁止 rm/del/format 等危险操作
-- web_search: 用 urllib 访问 DuckDuckGo（免费，不需 API key）
+- 所有文件操作限制在项目目录内
+- execute_command: 白名单命令
+- edit_file: 只改已存在的文件
 """
+import fnmatch
+from typing import Optional
 import os
 import subprocess
 import urllib.request
@@ -156,3 +158,178 @@ def web_search(query: str) -> str:
             f"'curl -s \"https://www.google.com/search?q={urllib.parse.quote(query)}\"' "
             f"来手动搜索。"
         )
+
+
+# ============================================================
+# 代码专用工具
+# ============================================================
+
+def grep_files(pattern: str, glob: Optional[str] = None, path: Optional[str] = None) -> str:
+    """
+    用正则表达式搜索文件内容（类似 ripgrep）。
+    pattern: 正则表达式
+    glob: 文件名过滤，如 "*.py" 或 "*.{js,ts}"
+    path: 搜索目录，默认项目根目录
+    返回：file:line: content 格式
+    """
+    import re as re_module
+    search_dir = os.path.abspath(os.path.join(PROJECT_ROOT, path)) if path else PROJECT_ROOT
+
+    if not search_dir.startswith(PROJECT_ROOT):
+        return f"安全限制：只能搜索项目目录 {PROJECT_ROOT} 内的文件"
+
+    if not os.path.isdir(search_dir):
+        return f"目录不存在：{path}"
+
+    try:
+        pattern_re = re_module.compile(pattern)
+    except re_module.error as e:
+        return f"正则表达式错误：{e}"
+
+    results = []
+    max_results = 50
+    max_line_len = 200
+
+    for root, dirs, files in os.walk(search_dir):
+        # 跳过隐藏目录和虚拟环境
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('venv', 'node_modules', '__pycache__')]
+
+        for fname in files:
+            if glob and not fnmatch.fnmatch(fname, glob):
+                continue
+
+            full_path = os.path.join(root, fname)
+            rel_path = os.path.relpath(full_path, PROJECT_ROOT)
+
+            try:
+                with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                    for line_no, line in enumerate(f, 1):
+                        if pattern_re.search(line):
+                            line_stripped = line.rstrip()[:max_line_len]
+                            results.append(f"{rel_path}:{line_no}: {line_stripped}")
+                            if len(results) >= max_results:
+                                break
+                    if len(results) >= max_results:
+                        break
+            except (PermissionError, OSError):
+                continue
+
+        if len(results) >= max_results:
+            break
+
+    if not results:
+        return f"未找到匹配 '{pattern}' 的内容。提示：检查正则是否正确，或用 grep_files(path='.') 扩大范围。"
+
+    header = f"搜索 '{pattern}'" + (f" (glob: {glob})" if glob else "") + f" — {len(results)} 条结果"
+    if len(results) >= max_results:
+        header += "（已达上限 50 条，请缩小范围）"
+    return header + "\n" + "\n".join(results)
+
+
+def edit_file(file_path: str, old_string: str, new_string: str) -> str:
+    """
+    精确字符串替换：在文件中找到 old_string 并替换为 new_string。
+    old_string 必须在文件中恰好出现一次（防止误改）。
+    类似 Claude Code 的 Edit 工具。
+
+    file_path: 文件路径（相对于项目根目录）
+    old_string: 要替换的原字符串（必须唯一匹配）
+    new_string: 替换后的新字符串
+    """
+    full_path = os.path.abspath(os.path.join(PROJECT_ROOT, file_path))
+
+    if not full_path.startswith(PROJECT_ROOT):
+        return f"安全限制：只能编辑项目目录 {PROJECT_ROOT} 内的文件"
+
+    if not os.path.exists(full_path):
+        return f"文件不存在：{file_path}"
+
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        return f"读取文件失败：{e}"
+
+    count = content.count(old_string)
+    if count == 0:
+        return (
+            f"未找到匹配的字符串。请确认 old_string 的内容是否与文件中完全一致（包括空格和换行）。\n"
+            f"提示：用 read_file('{file_path}') 查看文件内容后再试。"
+        )
+    if count > 1:
+        # 显示上下文帮助定位
+        lines = content.split("\n")
+        occurrences = []
+        for i, line in enumerate(lines, 1):
+            if old_string.strip() in line:
+                occurrences.append(f"  {file_path}:{i}: {line.strip()[:100]}")
+        occ_info = "\n".join(occurrences[:10])
+        return (
+            f"old_string 在文件中出现了 {count} 次，必须唯一。"
+            f"请包含更多上下文以确保唯一匹配。\n"
+            f"匹配位置：\n{occ_info}"
+        )
+
+    new_content = content.replace(old_string, new_string, 1)
+
+    try:
+        with open(full_path, "w", encoding="utf-8") as f:
+            f.write(new_content)
+    except Exception as e:
+        return f"写入文件失败：{e}"
+
+    # 返回修改摘要
+    old_lines = old_string.count("\n") + 1
+    new_lines = new_string.count("\n") + 1
+    return (
+        f"✅ 已修改 {file_path}\n"
+        f"  替换: {old_lines} 行 → {new_lines} 行\n"
+        f"  位置: {old_string[:60]}{'...' if len(old_string)>60 else ''}"
+    )
+
+
+def glob_files(pattern: str, path: Optional[str] = None) -> str:
+    """
+    用 glob 模式匹配文件名（类似 ls 但支持通配符）。
+    pattern: glob 模式，如 "*.py"、"**/*.md"、"src/**/*.ts"
+    path: 搜索起始目录，默认项目根目录
+    返回匹配的文件列表
+    """
+    import glob as glob_module
+    search_dir = os.path.abspath(os.path.join(PROJECT_ROOT, path)) if path else PROJECT_ROOT
+
+    if not search_dir.startswith(PROJECT_ROOT):
+        return f"安全限制：只能搜索项目目录 {PROJECT_ROOT} 内的文件"
+
+    full_pattern = os.path.join(search_dir, pattern)
+    matches = glob_module.glob(full_pattern, recursive=True)
+
+    # 过滤掉隐藏文件和缓存
+    matches = [m for m in matches
+               if not os.path.basename(m).startswith('.')
+               and '__pycache__' not in m
+               and 'node_modules' not in m]
+
+    if not matches:
+        return f"未找到匹配 '{pattern}' 的文件"
+
+    rel_paths = [os.path.relpath(m, PROJECT_ROOT) for m in matches]
+    rel_paths.sort()
+
+    # 区分文件和目录
+    files_list = []
+    dirs_list = []
+    for rp in rel_paths:
+        if os.path.isdir(os.path.join(PROJECT_ROOT, rp)):
+            dirs_list.append(f"  📁 {rp}/")
+        else:
+            files_list.append(f"  📄 {rp}")
+
+    result = f"匹配 '{pattern}' — {len(rel_paths)} 项\n"
+    if dirs_list:
+        result += "\n".join(dirs_list[:20]) + "\n"
+    if files_list:
+        result += "\n".join(files_list[:50])
+    if len(rel_paths) > 50:
+        result += f"\n... 还有 {len(rel_paths) - 50} 项，请缩小范围"
+    return result
