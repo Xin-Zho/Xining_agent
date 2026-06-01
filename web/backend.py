@@ -58,21 +58,24 @@ reasoner_client = LLMClient(LLM_REASONER_ID)  # deepseek-reasoner
 # 上下文管理器
 ctx_manager = ContextManager(fast_client)
 
-# 工具注册表 + 注册内置工具
+# 工具注册表 + 注册内置工具（描述要精准，带示例）
 tool_registry = ToolRegistry()
 tool_registry.register(
-    "read_file", "读取指定路径的文件内容",
-    {"path": {"type": "string", "description": "文件路径（相对或绝对）"}},
+    "read_file",
+    "读取文件内容或列出目录。传文件路径返回内容，传目录路径返回文件列表。示例：read_file(path='README.md')",
+    {"path": {"type": "string", "description": "要读取的文件路径或目录路径，例如 'README.md' 或 '.'"}},
     read_file
 )
 tool_registry.register(
-    "execute_command", "执行 Shell 命令（白名单限制，危险命令被阻止）",
-    {"command": {"type": "string", "description": "要执行的命令"}},
+    "execute_command",
+    "执行系统命令。允许的命令：ls/dir/cat/echo/head/tail/python/git/find/grep 等。示例：execute_command(command='ls *.py')",
+    {"command": {"type": "string", "description": "要执行的命令字符串，如 'ls -la' 或 'cat app.py'"}},
     execute_command
 )
 tool_registry.register(
-    "web_search", "搜索互联网获取信息",
-    {"query": {"type": "string", "description": "搜索关键词"}},
+    "web_search",
+    "搜索互联网获取信息。用来查实时信息、API 文档、解决方案。示例：web_search(query='Python asyncio tutorial')",
+    {"query": {"type": "string", "description": "搜索关键词，英文更精准，如 'python read file example'"}},
     web_search
 )
 
@@ -254,21 +257,17 @@ async def agent_run(req: AgentRequest):
     cl = reasoner_client if req.model == "reasoner" else fast_client
     user_msg = req.messages[-1]["content"] if req.messages else ""
 
-    # 重建 Agent 实例（使用正确的 LLM 客户端）
-    agent_reg = ToolRegistry()
-    agent_reg.register("read_file", "读取文件", {"path": {"type": "string", "description": "文件路径"}}, read_file)
-    agent_reg.register("execute_command", "执行命令", {"command": {"type": "string", "description": "命令"}}, execute_command)
-    agent_reg.register("web_search", "搜索网页", {"query": {"type": "string", "description": "关键词"}}, web_search)
+    # 使用全局工具注册表（已注册好，描述优化过）
 
     if req.mode == "plan_solve":
-        agent = PlanAndSolveAgent(cl, agent_reg)
+        agent = PlanAndSolveAgent(cl, tool_registry)
         result = agent.run(user_msg)
     elif req.mode == "reflection":
-        agent = ReflectionAgent(cl, agent_reg)
+        agent = ReflectionAgent(cl, tool_registry)
         result = agent.run(user_msg)
         result["plan"] = []
     else:
-        agent = ReactAgent(cl, agent_reg)
+        agent = ReactAgent(cl, tool_registry)
         result = agent.run(user_msg)
         result["plan"] = []
         result["reflections"] = []
@@ -283,17 +282,17 @@ async def agent_stream(req: AgentRequest):
     user_msg = req.messages[-1]["content"] if req.messages else ""
 
     # 重建 Agent
-    agent_reg = ToolRegistry()
-    agent_reg.register("read_file", "读取文件", {"path": {"type": "string", "description": "文件路径"}}, read_file)
-    agent_reg.register("execute_command", "执行命令", {"command": {"type": "string", "description": "命令"}}, execute_command)
-    agent_reg.register("web_search", "搜索网页", {"query": {"type": "string", "description": "关键词"}}, web_search)
+    tool_registry = ToolRegistry()
+    tool_registry.register("read_file", "读取文件", {"path": {"type": "string", "description": "文件路径"}}, read_file)
+    tool_registry.register("execute_command", "执行命令", {"command": {"type": "string", "description": "命令"}}, execute_command)
+    tool_registry.register("web_search", "搜索网页", {"query": {"type": "string", "description": "关键词"}}, web_search)
 
     if req.mode == "plan_solve":
-        agent = PlanAndSolveAgent(cl, agent_reg)
+        agent = PlanAndSolveAgent(cl, tool_registry)
     elif req.mode == "reflection":
-        agent = ReflectionAgent(cl, agent_reg)
+        agent = ReflectionAgent(cl, tool_registry)
     else:
-        agent = ReactAgent(cl, agent_reg)
+        agent = ReactAgent(cl, tool_registry)
 
     def generate():
         # 发送开始信号

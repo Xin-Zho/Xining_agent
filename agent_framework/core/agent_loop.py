@@ -1,38 +1,55 @@
 """
 ReAct Agent — 思考(Thought) → 行动(Action) → 观察(Observation) 循环
 
-核心概念：
-  Agent 不是"一次 LLM 调用"，而是一个 while 循环。
-  每次循环：模型决定用哪个工具 → 执行 → 看到结果 → 再决定 → 直到能回答。
+优化要点：
+  - Token 预算管理（防止超限）
+  - 工具结果智能截断（保留关键部分，丢弃噪音）
+  - 重复调用检测（防止死循环）
+  - 及早退出（够用了就答）
 """
 import json
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from agent_framework.core.prompt import REACT_SYSTEM_PROMPT
 from agent_framework.tools.registry import ToolRegistry
+from chat.context_manager import estimate_tokens
+
+# 约 100K token 预算（留余量给模型回复）
+TOKEN_BUDGET = 90_000
+# 工具结果最大 token（保留头尾，中间截掉）
+MAX_OBS_TOKENS = 2000
 
 
 class ReactAgent:
     """
-    ReAct Agent：自主决定何时使用工具。
+    ReAct Agent：自主决定何时使用工具 + token 预算管理。
 
     用法：
         agent = ReactAgent(llm_client, tool_registry)
         result = agent.run("帮我看看当前目录有什么文件")
-        # result = {"answer": "...", "steps": [...], "turns": 3}
     """
 
-    def __init__(self, llm_client, tool_registry: ToolRegistry, max_turns: int = 10):
+    def __init__(self, llm_client, tool_registry: ToolRegistry, max_turns: int = 8):
         self.client = llm_client
         self.registry = tool_registry
         self.max_turns = max_turns
+        self._called_history = []  # 防重复调用
 
     def run(self, user_message: str, system_prompt: str = None) -> dict:
         """
-        运行 ReAct 循环。
-
-        user_message: 用户问题
-        system_prompt: 自定义 System Prompt（可选，不传用默认）
-        返回：{"answer": str, "steps": list, "turns": int}
+        运行 ReAct 循环。返回：
+        {
+            "answer": str,
+            "steps": list,
+            "turns": int,
+            "total_tokens": int,      # 估算总 token
+            "truncated": bool          # 是否因 token 超限被截
+        }
         """
+        self._called_history = []
+
         tools_desc = self._format_tools()
         sys_prompt = (system_prompt or REACT_SYSTEM_PROMPT).format(
             tools_description=tools_desc
@@ -45,20 +62,33 @@ class ReactAgent:
 
         tools_def = self.registry.get_definitions() if self.registry.list_tools() else None
         steps = []
+        total_tokens = estimate_tokens(sys_prompt) + estimate_tokens(user_message)
 
         for turn in range(1, self.max_turns + 1):
-            # 调 LLM（加超时，防止模型迟迟不返回）
+            # Token 预算检查
+            if total_tokens > TOKEN_BUDGET:
+                # 超限：注入摘要并继续
+                messages = self._emergency_compact(messages)
+                total_tokens = estimate_tokens(
+                    " ".join(m.get("content", "") or "" for m in messages)
+                )
+
+            # 调 LLM
             response = self.client.client.chat.completions.create(
                 model=self.client.model_id,
                 messages=messages,
                 tools=tools_def,
-                timeout=60  # 60 秒超时
+                timeout=60
             )
 
             choice = response.choices[0]
             msg = choice.message
 
-            # 如果模型要调工具
+            # 统计 token
+            if hasattr(response, 'usage') and response.usage:
+                total_tokens += getattr(response.usage, 'total_tokens', 0)
+
+            # 模型要调工具
             if msg.tool_calls:
                 for tc in msg.tool_calls:
                     tool_name = tc.function.name
@@ -67,22 +97,31 @@ class ReactAgent:
                     except json.JSONDecodeError:
                         arguments = {}
 
-                    # 执行工具
-                    observation = self.registry.execute(tool_name, arguments)
+                    # 防重复：同一工具 + 同一参数，最多调 2 次
+                    call_key = f"{tool_name}:{json.dumps(arguments, ensure_ascii=False)}"
+                    if self._called_history.count(call_key) >= 2:
+                        observation = "此工具调用已重复 2 次，请换其他方法或直接基于已有信息回答。"
+                    else:
+                        self._called_history.append(call_key)
+                        # 执行工具
+                        raw_obs = self.registry.execute(tool_name, arguments)
+                        observation = self._smart_truncate(raw_obs)
+
+                    # 失败提示
+                    if any(w in observation for w in ["失败", "错误", "超时", "不支持", "安全限制"]):
+                        observation += "\n（此工具未成功，请换一个方法）"
 
                     step = {
                         "turn": turn,
-                        "thought": f"调用工具 {tool_name}",
+                        "thought": f"调用 {tool_name}",
                         "action": f"{tool_name}({json.dumps(arguments, ensure_ascii=False)})",
-                        "observation": observation[:1000]  # 展示时截断
+                        "observation": observation[:800]
                     }
                     steps.append(step)
 
-                    # 如果工具执行失败，提示模型换策略
-                    if "失败" in observation or "错误" in observation or "超时" in observation:
-                        observation += "\n\n请尝试其他方法，不要重复调用同一个失败的工具。"
+                    total_tokens += estimate_tokens(observation)
 
-                    # 把工具调用和结果加入消息
+                    # 加入消息
                     messages.append({
                         "role": "assistant",
                         "content": msg.content or "",
@@ -101,35 +140,71 @@ class ReactAgent:
                         "content": observation
                     })
             else:
-                # 模型给出最终回答
+                # 最终回答
                 answer = msg.content or ""
                 return {
                     "answer": answer,
                     "steps": steps,
                     "turns": turn,
+                    "total_tokens": total_tokens,
+                    "truncated": total_tokens > TOKEN_BUDGET
                 }
 
-        # 达到最大轮次，强制总结
+        # 达到最大轮次
         messages.append({
             "role": "user",
-            "content": "你已经用完了所有轮次。请基于已有信息给出最终回答。"
+            "content": "轮次已用完。请基于以上信息，用一句话给出最终回答。"
         })
         final = self.client.chat(messages)
         return {
             "answer": final,
             "steps": steps,
             "turns": self.max_turns,
+            "total_tokens": total_tokens,
             "truncated": True
         }
 
+    def _smart_truncate(self, text: str, max_tokens: int = MAX_OBS_TOKENS) -> str:
+        """
+        智能截断工具结果：
+        - 短结果：原样返回
+        - 长结果：保留前 60% + 后 20%（头尾关键，中间省略）
+        """
+        tokens = estimate_tokens(text)
+        if tokens <= max_tokens:
+            return text
+
+        head_size = int(len(text) * 0.6)
+        tail_size = int(len(text) * 0.2)
+
+        head = text[:head_size]
+        tail = text[-tail_size:] if tail_size > 0 else ""
+
+        omitted = tokens - estimate_tokens(head) - estimate_tokens(tail)
+        return (
+            f"{head}\n\n"
+            f"...（省略 {omitted} tokens 的中间内容，完整结果请用 read_file 分段读取）...\n\n"
+            f"{tail}"
+        )
+
+    def _emergency_compact(self, messages: list[dict]) -> list[dict]:
+        """紧急压缩：保留 system + 最近 6 条，丢弃中间"""
+        if len(messages) <= 7:
+            return messages
+        system = [m for m in messages if m["role"] == "system"]
+        rest = [m for m in messages if m["role"] != "system"]
+        return system + rest[-6:]
+
     def _format_tools(self) -> str:
-        """格式化工具列表为可读文本（给 System Prompt 用）"""
         if not self.registry.list_tools():
-            return "（暂无可用工具）"
+            return "（无可用工具）"
         lines = []
         for name in self.registry.list_tools():
             tool = self.registry._tools[name]["definition"]["function"]
+            desc = tool["description"]
             params = tool["parameters"]["properties"]
-            param_str = ", ".join(f"{k}: {v.get('type','?')}" for k, v in params.items())
-            lines.append(f"- **{name}**({param_str}): {tool['description']}")
+            param_str = ", ".join(
+                f"{k}({v.get('type','str')})" for k, v in params.items()
+            )
+            lines.append(f"- {name}({param_str}): {desc}")
         return "\n".join(lines)
