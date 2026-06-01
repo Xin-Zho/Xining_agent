@@ -1,0 +1,35 @@
+# Python 虚拟环境（镜像里不需要，依赖在 requirements.txt 里装）
+venv/
+
+# 敏感配置（运行时通过 --env-file 传入）
+.env
+
+# Git（镜像里不需要版本历史）
+.git/
+.gitignore
+
+# 缓存和编译产物
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE 配置
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 临时文件
+*.tmp
+*.log
+
+# 用户数据（运行时动态生成）
+web/users.json
+agent_framework/data/*.json
