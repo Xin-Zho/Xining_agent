@@ -47,11 +47,12 @@ class ReactAgent:
         steps = []
 
         for turn in range(1, self.max_turns + 1):
-            # 调 LLM
+            # 调 LLM（加超时，防止模型迟迟不返回）
             response = self.client.client.chat.completions.create(
                 model=self.client.model_id,
                 messages=messages,
-                tools=tools_def
+                tools=tools_def,
+                timeout=60  # 60 秒超时
             )
 
             choice = response.choices[0]
@@ -76,6 +77,10 @@ class ReactAgent:
                         "observation": observation[:1000]  # 展示时截断
                     }
                     steps.append(step)
+
+                    # 如果工具执行失败，提示模型换策略
+                    if "失败" in observation or "错误" in observation or "超时" in observation:
+                        observation += "\n\n请尝试其他方法，不要重复调用同一个失败的工具。"
 
                     # 把工具调用和结果加入消息
                     messages.append({

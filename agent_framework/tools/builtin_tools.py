@@ -76,7 +76,7 @@ def execute_command(command: str) -> str:
     try:
         result = subprocess.run(
             command, shell=True, capture_output=True, text=True,
-            timeout=30, cwd=PROJECT_ROOT
+            timeout=10, cwd=PROJECT_ROOT  # 降到 10 秒，避免 Agent 卡住
         )
         output = result.stdout
         if result.stderr:
@@ -85,44 +85,74 @@ def execute_command(command: str) -> str:
             output += f"\n[退出码: {result.returncode}]"
         return output or "(命令执行完成，无输出)"
     except subprocess.TimeoutExpired:
-        return "命令执行超时（30 秒限制）"
+        return f"命令 '{command}' 执行超时（超过 10 秒）。请尝试简化命令或分步执行。"
     except Exception as e:
         return f"命令执行失败：{e}"
 
 
 def web_search(query: str) -> str:
     """
-    网页搜索（DuckDuckGo）。
+    网页搜索。优先用 Bing（国内可访问），不行动用 DuckDuckGo。
     query: 搜索关键词
-    返回前 5 条结果的标题和摘要。
+    返回前 5 条结果。
     """
+    # 先试 Bing（国内直接访问，速度快）
     try:
-        # DuckDuckGo HTML 搜索（免费，无 API key）
+        url = f"https://www.bing.com/search?q={urllib.parse.quote(query)}&setlang=zh-cn"
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+
+        # 提取 Bing 搜索结果
+        results = re.findall(
+            r'<li class="b_algo".*?<h2><a href="([^"]+)".*?>(.*?)</a></h2>.*?<p.*?>(.*?)</p>',
+            html, re.DOTALL
+        )
+
+        if results:
+            lines = [f"搜索：{query}（来源：Bing）\n"]
+            for i, (url, title, snippet) in enumerate(results[:5], 1):
+                title_clean = re.sub(r'<[^>]+>', '', title).strip()
+                snippet_clean = re.sub(r'<[^>]+>', '', snippet).strip()
+                lines.append(f"{i}. {title_clean}")
+                lines.append(f"   {snippet_clean[:200]}")
+                lines.append(f"   {url}\n")
+            return "\n".join(lines)
+    except Exception:
+        pass
+
+    # Bing 失败，回退到 DuckDuckGo
+    try:
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
         req = urllib.request.Request(url, headers={
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         })
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=3) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
 
-        # 简单正则提取搜索结果
         results = re.findall(
             r'<a rel="nofollow" class="result__a" href="([^"]+)".*?>(.*?)</a>.*?<a class="result__snippet".*?>(.*?)</a>',
             html, re.DOTALL
         )
 
         if not results:
-            return f"搜索 '{query}' 无结果，或 DuckDuckGo 暂时不可用"
+            return f"搜索 '{query}' 无结果。请尝试更具体的关键词，或换用 execute_command 执行 curl 来搜索。"
 
-        lines = [f"搜索：{query}\n"]
+        lines = [f"搜索：{query}（来源：DuckDuckGo）\n"]
         for i, (url, title, snippet) in enumerate(results[:5], 1):
             title_clean = re.sub(r'<[^>]+>', '', title).strip()
             snippet_clean = re.sub(r'<[^>]+>', '', snippet).strip()
             lines.append(f"{i}. {title_clean}")
             lines.append(f"   {snippet_clean}")
             lines.append(f"   {url}\n")
-
         return "\n".join(lines)
 
-    except Exception as e:
-        return f"搜索失败：{e}\n提示：DuckDuckGo 可能需要科学上网。可以改用 'https://www.baidu.com/s?wd={urllib.parse.quote(query)}' 手动搜索。"
+    except Exception:
+        return (
+            f"搜索失败：网络不可用，Bing 和 DuckDuckGo 均无法连接。\n"
+            f"建议：将查询改为使用 execute_command 工具，执行 "
+            f"'curl -s \"https://www.google.com/search?q={urllib.parse.quote(query)}\"' "
+            f"来手动搜索。"
+        )
