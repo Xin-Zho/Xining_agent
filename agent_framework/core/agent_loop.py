@@ -90,6 +90,8 @@ class ReactAgent:
 
             # 模型要调工具
             if msg.tool_calls:
+                # 解析所有工具调用
+                call_tasks = []  # [(tc, tool_name, arguments)]
                 for tc in msg.tool_calls:
                     tool_name = tc.function.name
                     try:
@@ -97,18 +99,60 @@ class ReactAgent:
                     except json.JSONDecodeError:
                         arguments = {}
 
-                    # 防重复：同一工具 + 同一参数，最多调 2 次
                     call_key = f"{tool_name}:{json.dumps(arguments, ensure_ascii=False)}"
                     if self._called_history.count(call_key) >= 2:
-                        observation = "此工具调用已重复 2 次，请换其他方法或直接基于已有信息回答。"
+                        arguments = {"__blocked__": True, "__reason__": "重复调用已超过 2 次"}
                     else:
                         self._called_history.append(call_key)
-                        # 执行工具
-                        raw_obs = self.registry.execute(tool_name, arguments)
-                        observation = self._smart_truncate(raw_obs)
 
-                    # 失败提示
-                    if any(w in observation for w in ["失败", "错误", "超时", "不支持", "安全限制"]):
+                    call_tasks.append((tc, tool_name, arguments))
+
+                # ========== 并行执行所有工具 ==========
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                results = {}  # tc.id -> observation
+                with ThreadPoolExecutor(max_workers=min(8, len(call_tasks))) as pool:
+                    futures = {}
+                    for tc, tool_name, arguments in call_tasks:
+                        if arguments.get("__blocked__"):
+                            # 被阻止，不执行
+                            results[tc.id] = f"工具调用已被阻止：{arguments.get('__reason__', '重复调用')}"
+                        else:
+                            futures[pool.submit(
+                                self.registry.execute, tool_name, arguments
+                            )] = tc.id
+
+                    for future in as_completed(futures):
+                        tc_id = futures[future]
+                        try:
+                            results[tc_id] = future.result(timeout=30)
+                        except Exception as e:
+                            results[tc_id] = f"工具执行异常：{type(e).__name__}: {e}"
+
+                # ========== 收集结果 ==========
+                # 一条 assistant 消息带所有 tool_calls
+                messages.append({
+                    "role": "assistant",
+                    "content": msg.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments
+                            }
+                        }
+                        for tc in msg.tool_calls
+                    ]
+                })
+
+                # 每个 tool call 一条 tool 消息
+                for tc, tool_name, arguments in call_tasks:
+                    raw_obs = results.get(tc.id, "工具执行无响应")
+                    observation = self._smart_truncate(raw_obs)
+
+                    if any(w in observation for w in ["失败", "错误", "超时", "不支持", "安全限制", "异常", "阻止"]):
                         observation += "\n（此工具未成功，请换一个方法）"
 
                     step = {
@@ -118,22 +162,8 @@ class ReactAgent:
                         "observation": observation[:800]
                     }
                     steps.append(step)
-
                     total_tokens += estimate_tokens(observation)
 
-                    # 加入消息
-                    messages.append({
-                        "role": "assistant",
-                        "content": msg.content or "",
-                        "tool_calls": [{
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments
-                            }
-                        }]
-                    })
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
