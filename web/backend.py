@@ -35,6 +35,8 @@ from chat.context_manager import ContextManager, count_messages_tokens, MAX_TOKE
 
 from agent_framework.tools.registry import ToolRegistry
 from agent_framework.tools.builtin_tools import read_file, execute_command, web_search, grep_files, edit_file, glob_files
+from agent_framework.training.dialogue_logger import DialogueLogger
+from agent_framework.training.rule_extractor import RuleExtractor
 from agent_framework.core.agent_loop import ReactAgent
 from agent_framework.core.planner import PlanAndSolveAgent
 from agent_framework.core.reflector import ReflectionAgent
@@ -113,6 +115,9 @@ tool_registry.register(
 react_agent = ReactAgent(fast_client, tool_registry, max_turns=10)
 plan_agent = PlanAndSolveAgent(fast_client, tool_registry, max_steps=5)
 reflection_agent = ReflectionAgent(fast_client, tool_registry, max_iterations=3)
+
+# 对话日志记录器
+dialogue_logger = DialogueLogger()
 
 # ============================================================
 # 用户数据存储
@@ -292,15 +297,19 @@ async def agent_run(req: AgentRequest):
     if req.mode == "plan_solve":
         agent = PlanAndSolveAgent(cl, tool_registry)
         result = agent.run(user_msg)
-    elif req.mode == "reflection":
-        agent = ReflectionAgent(cl, tool_registry)
-        result = agent.run(user_msg)
-        result["plan"] = []
     else:
         agent = ReactAgent(cl, tool_registry)
         result = agent.run(user_msg)
         result["plan"] = []
-        result["reflections"] = []
+
+    # 记录日志
+    dialogue_logger.log(
+        user="anonymous", question=user_msg, answer=result.get("answer", ""),
+        source="agent", model=req.model,
+        tokens=result.get("total_tokens", 0),
+        steps=result.get("steps", []),
+        reflection=result.get("reflection", "")
+    )
 
     return {"ok": True, **result}
 
@@ -359,6 +368,15 @@ async def agent_stream(req: AgentRequest):
         if "reflections" in result and result.get("reflections"):
             yield f"data: {json.dumps({'type': 'reflections', 'reflections': result['reflections']})}\n\n"
 
+        # 记录日志
+        dialogue_logger.log(
+            user="anonymous", question=user_msg, answer=result.get("answer", ""),
+            source="agent", model=req.model,
+            tokens=result.get("total_tokens", 0),
+            steps=result.get("steps", []),
+            reflection=result.get("reflection", "")
+        )
+
         # 发送最终回答
         answer = result.get("answer", "")
         yield f"data: {json.dumps({'type': 'answer', 'answer': answer})}\n\n"
@@ -370,6 +388,25 @@ async def agent_stream(req: AgentRequest):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
     )
+
+
+# ============================================================
+# 日志 & Prompt 优化接口
+# ============================================================
+
+@app.get("/api/logs/stats")
+async def logs_stats():
+    """日志统计概览"""
+    return dialogue_logger.stats()
+
+
+@app.get("/api/logs/suggestions")
+async def logs_suggestions():
+    """从 Claude 日志中提取 Prompt 优化建议"""
+    logs = dialogue_logger.get_claude_logs(days=30)
+    extractor = RuleExtractor(logs)
+    suggestions = extractor.generate_prompt_suggestions()
+    return {"ok": True, "total_logs": len(logs), "suggestions": suggestions}
 
 
 # ============================================================
@@ -411,11 +448,20 @@ async def claude_stream(req: ChatRequest):
                 cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             )
             ansi_re = re.compile(r'\x1b\[[0-9;]*m')
+            full_output = []
             for line in proc.stdout:
                 clean = ansi_re.sub('', line)
                 if clean.strip():
+                    full_output.append(clean)
                     yield f"data: {json.dumps({'token': clean})}\n\n"
             proc.wait()
+            # 记录日志
+            full_reply = "".join(full_output)
+            dialogue_logger.log(
+                user="anonymous", question=user_msg, answer=full_reply,
+                source="claude", model="claude-code",
+                tokens=sum(len(t)//3 for t in full_output)
+            )
             yield f"data: {json.dumps({'done': True})}\n\n"
         except FileNotFoundError:
             yield f"data: {json.dumps({'error': 'Claude Code CLI 未安装，请运行 npm install -g @anthropic-ai/claude-code'})}\n\n"
@@ -474,10 +520,31 @@ async def upload(file: UploadFile = File(...),
             except Exception:
                 raise HTTPException(400, "无法解码文件内容，请确认文件编码为 UTF-8")
 
-        # PDF 特殊处理：暂时返回提示
+        # PDF 特殊处理：用 PyPDF2 解析
         if content_type == "application/pdf":
-            raise HTTPException(400,
-                "暂不支持 PDF 解析，请将内容复制粘贴为文本消息发送")
+            try:
+                from PyPDF2 import PdfReader
+                import io
+                reader = PdfReader(io.BytesIO(content_bytes))
+                text_parts = []
+                for page in reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_parts.append(page_text)
+                pdf_text = "\n--- 分页 ---\n".join(text_parts)
+                if not pdf_text.strip():
+                    raise HTTPException(400, "PDF 文件中未提取到文字（可能是扫描件或图片型 PDF）")
+                return {
+                    "ok": True,
+                    "filename": file.filename,
+                    "content_type": content_type,
+                    "is_image": False,
+                    "content": f"[PDF: {file.filename}]\n{pdf_text[:80000]}"  # 限制 80KB
+                }
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(400, f"PDF 解析失败：{str(e)[:100]}")
 
         return {
             "ok": True,

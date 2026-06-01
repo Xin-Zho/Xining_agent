@@ -474,7 +474,7 @@ body {
             <div class="attach-tags" id="attachTags"></div>
             <div class="input-row">
                 <button class="btn-attach interactive" onclick="document.getElementById('fileInput').click()" title="上传文件">📎</button>
-                <input type="file" id="fileInput" style="display:none" onchange="handleFileSelect(this.files)" multiple accept="image/*,.txt,.md,.py,.json,.csv">
+                <input type="file" id="fileInput" style="display:none" onchange="handleFileSelect(this.files)" multiple accept="image/*,.txt,.md,.py,.json,.csv,.pdf">
                 <textarea id="userInput" rows="1" placeholder="输入消息…" onkeydown="handleKeyDown(event)"></textarea>
                 <button class="btn-send interactive" id="sendBtn" onclick="sendMessage()">发送</button>
             </div>
@@ -675,7 +675,7 @@ async function handleFileSelect(files){
         if(attachments.length>=ATTACH_MAX){alert(`最多上传 ${ATTACH_MAX} 个文件`);break}
         if(f.size>ATTACH_MAX_SIZE){alert(`${f.name} 超过 10MB 限制`);continue}
         const isImage=f.type.startsWith('image/'),ext=f.name.split('.').pop().toLowerCase();
-        if(!isImage&&!['txt','md','py','json','csv'].includes(ext)){alert(`${f.name} 类型不支持。允许：图片、txt、md、py、json、csv`);continue}
+        if(!isImage&&!['txt','md','py','json','csv','pdf'].includes(ext)){alert(`${f.name} 类型不支持。允许：图片、txt、md、py、json、csv、pdf`);continue}
         if(isImage){const reader=new FileReader();await new Promise(r=>{reader.onload=()=>{attachments.push({name:f.name,type:f.type,content:reader.result,isImage:true});r()};reader.readAsDataURL(f)})}
         else{const form=new FormData();form.append('file',f);try{const resp=await fetch('/api/upload',{method:'POST',headers:{'Authorization':'Bearer '+userToken},body:form});const data=await resp.json();if(!resp.ok||!data.ok){const errMsg=data.detail||data.error||'上传失败';alert(`${f.name}: ${errMsg}`);continue}attachments.push({name:f.name,type:data.content_type,content:data.content,isImage:false})}catch(e){alert(`${f.name}: 网络错误，请重试`)}}
     }
