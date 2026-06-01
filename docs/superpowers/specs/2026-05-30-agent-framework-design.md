@@ -425,7 +425,11 @@ agent_framework/
 
 ## 待办清单（项目收尾时处理）
 
-- [ ] **PDF 文件解析**：安装 `PyPDF2`，后端 `/api/upload` 支持读取 PDF 文本内容。前端允许列表加回 `pdf`。当前 PDF 被拦（提示"暂不支持"）。
+- [x] **PDF 文件解析** ✅ — PyPDF2 已装，后端支持 PDF 解析，前端允许上传。
+- [x] **Prompt 调优体系** ✅ — `agent_framework/training/`：
+  - `dialogue_logger.py`：JSONL 日志记录器（Claude/Agent 全部交互自动记录）
+  - `rule_extractor.py`：从日志提取规则 → `GET /api/logs/suggestions` 查看优化建议
+  - 持续积累：通过 Claude 管道对话越多，建议越精准
 - [ ] 后续补充...
 
 ---
