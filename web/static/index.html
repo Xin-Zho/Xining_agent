@@ -715,7 +715,29 @@ async function sendMessage(){
         typingRow.remove();const aiBubble=addMsgBubble('ai','');let full='';
         const reader=resp.body.getReader(),decoder=new TextDecoder();let buf='';
         while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n\n');buf=lines.pop();for(const line of lines){if(!line.startsWith('data: '))continue;let d;try{d=JSON.parse(line.slice(6))}catch(e){continue}
-            if(d.type==='step'){const s=document.createElement('div');s.className='msg-row ai';s.innerHTML='<div class="step-bubble">🔧 <b>'+d.step.action+'</b><br>'+d.step.observation.slice(0,300)+'</div>';messagesDiv.appendChild(s);scrollBottom()}
+            if(d.type==='step'){
+                const step=d.step;
+                let label='', detail='';
+                if(step.type==='tool_call'){
+                  label='🔧 <b>'+((step.tool_name||'工具')+'</b>');
+                  let obs=step.observation||'';
+                  // 解析 observation JSON，提取可读内容
+                  if(typeof obs==='string'&&obs.startsWith('{')){
+                    try{const o=JSON.parse(obs);obs=o.result||o.content||o.observation||obs}catch(e){}
+                  }
+                  detail=obs.slice(0,500);
+                }else if(step.type==='thought'){
+                  label='💭 <b>思考</b>';
+                  detail=(step.thought||'').slice(0,300);
+                }else if(step.type==='plan'){
+                  label='📋 <b>计划</b>';
+                  detail=(step.thought||'').slice(0,500);
+                }else{
+                  label='⚡ <b>'+(step.type||'步骤')+'</b>';
+                  detail=(step.thought||step.observation||'').slice(0,300);
+                }
+                const s=document.createElement('div');s.className='msg-row ai';s.innerHTML='<div class="step-bubble">'+label+'<br>'+detail+'</div>';messagesDiv.appendChild(s);scrollBottom()
+            }
             else if(d.type==='plan'){const p=document.createElement('div');p.className='msg-row ai';p.innerHTML='<div class="plan-bubble">📋 <b>计划</b><br>'+d.plan.map((s,i)=>(i+1)+'. '+s).join('<br>')+'</div>';messagesDiv.appendChild(p);scrollBottom()}
             else if(d.type==='reflections'){const r=document.createElement('div');r.className='msg-row ai';r.innerHTML='<div class="reflect-bubble">🔄 <b>反思</b><br>'+d.reflections.join('<br>')+'</div>';messagesDiv.appendChild(r);scrollBottom()}
             else if(d.type==='answer'){aiBubble.textContent=d.answer;full=d.answer;scrollBottom()}
