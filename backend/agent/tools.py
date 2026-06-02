@@ -118,13 +118,6 @@ async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict
             kwargs["timedelta"] = fresh
 
         with DDGS() as ddgs:
-
-    try:
-        kwargs = {"max_results": max_results}
-        if fresh:
-            kwargs["timedelta"] = fresh
-
-        with DDGS() as ddgs:
             results = list(ddgs.text(query, **kwargs))
 
         items = []
