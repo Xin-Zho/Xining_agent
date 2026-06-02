@@ -414,50 +414,54 @@ async def _glob_files(pattern: str, path: str = None) -> dict:
 
 async def _stock_query(action: str = "top", market: str = "a", count: int = 10) -> dict:
     """
-    查询 A 股实时行情。
+    查询 A 股实时行情（新浪财经接口）。
     action: "top" (涨幅榜), "down" (跌幅榜), "volume" (成交量榜)
     market: "a" (A股), "kcb" (科创板), "cyb" (创业板)
     """
     try:
-        market_map = {
-            "a": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",
-            "kcb": "m:1+t:23",
-            "cyb": "m:0+t:80",
-        }
-        sort_map = {"top": "f3", "down": "f3", "volume": "f5"}
+        # 新浪财经 A 股涨幅排行 JSON API
+        sort_map = {"top": "changepercent", "down": "changepercent", "volume": "volume"}
         order_map = {"top": 0, "down": 1, "volume": 0}
+        market_nodes = {
+            "a": "hs_a",       # 沪深A股
+            "kcb": "kcb",      # 科创板
+            "cyb": "cyb",      # 创业板
+        }
 
-        fs = market_map.get(market, market_map["a"])
-        fid = sort_map.get(action, "f3")
-        po = order_map.get(action, 0)
+        node = market_nodes.get(market, "hs_a")
+        sort_field = sort_map.get(action, "changepercent")
+        asc = order_map.get(action, 0)
 
         url = (
-            f"https://push2.eastmoney.com/api/qt/clist/get?"
-            f"pn=1&pz={count}&po={po}&np=1&fltt=2&invt=2&fid={fid}&fs={fs}"
-            f"&fields=f2,f3,f4,f5,f6,f12,f14,f15,f16,f17,f18,f20"
+            f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+            f"Market_Center.getHQNodeData?"
+            f"page=1&num={count}&sort={sort_field}&asc={asc}"
+            f"&node={node}&symbol=&_s_r_a=auto"
         )
 
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://finance.sina.com.cn/",
+        }
+
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers={"Referer": "https://quote.eastmoney.com/"})
+            resp = await client.get(url, headers=headers)
             data = resp.json()
 
-        if not data or "data" not in data or not data["data"]:
-            return {"error": "未获取到股票数据", "action": action}
-
         stocks = []
-        for item in data["data"].get("diff", []):
+        for item in data:
             stocks.append({
-                "code": item.get("f12", ""),
-                "name": item.get("f14", ""),
-                "price": item.get("f2", None),
-                "change_pct": item.get("f3", None),
-                "change_amount": item.get("f4", None),
-                "volume_hand": item.get("f5", None),
-                "turnover_yuan": item.get("f6", None),
-                "high": item.get("f15", None),
-                "low": item.get("f16", None),
-                "open": item.get("f17", None),
-                "pre_close": item.get("f18", None),
+                "code": item.get("code", ""),
+                "name": item.get("name", ""),
+                "price": float(item.get("trade", 0)),
+                "change_pct": float(item.get("changepercent", 0)),
+                "change_amount": float(item.get("pricechange", 0)),
+                "volume_hand": int(item.get("volume", 0)),
+                "turnover_yuan": int(item.get("amount", 0)),
+                "high": float(item.get("high", 0)),
+                "low": float(item.get("low", 0)),
+                "open": float(item.get("open", 0)),
+                "pre_close": float(item.get("settlement", 0)),
             })
 
         action_names = {"top": "涨幅榜", "down": "跌幅榜", "volume": "成交量榜"}
@@ -465,11 +469,10 @@ async def _stock_query(action: str = "top", market: str = "a", count: int = 10) 
             "action": action_names.get(action, action),
             "market": market,
             "count": len(stocks),
-            "stocks": stocks,
-            "update_time": data["data"].get("total", 0),
+            "stocks": stocks[:count],
         }
     except Exception as e:
-        return {"error": str(e), "action": action}
+        return {"error": str(e), "action": action, "hint": "新浪接口可能暂时不可用，建议用 web_search 搜索股票行情替代"}
 
 
 # ── 工具注册表 ──────────────────────────────────────────────────────────
