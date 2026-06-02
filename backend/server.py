@@ -861,12 +861,49 @@ async def compat_agent_stream(req: LegacyAgentRequest):
                 conn.close()
                 for s in steps:
                     last_step = s["step_number"]
+
+                    # 解析 tool_result 为可读文本
+                    obs_text = ""
+                    raw = s["tool_result"]
+                    if raw:
+                        try:
+                            parsed = json.loads(raw)
+                            # 提取嵌套的 observation
+                            inner = parsed.get("observation", "")
+                            if isinstance(inner, str) and inner.startswith("{"):
+                                try:
+                                    inner_parsed = json.loads(inner)
+                                    # 针对不同工具格式化
+                                    if inner_parsed.get("type") == "directory":
+                                        obs_text = f"📁 {inner_parsed.get('path','.')} ({inner_parsed.get('count',0)} 项): " + ", ".join(inner_parsed.get("items", [])[:10])
+                                    elif "results" in inner_parsed:
+                                        items = inner_parsed["results"][:3]
+                                        obs_text = f"🔍 搜索 '{inner_parsed.get('query','')}' ({inner_parsed.get('count',0)} 条)\n" + "\n".join(f"  {r.get('title','')} - {r.get('url','')}" for r in items)
+                                    elif "content" in inner_parsed:
+                                        obs_text = inner_parsed["content"][:500]
+                                    elif "result" in inner_parsed:
+                                        obs_text = f"🧮 {inner_parsed.get('expression','')} = {inner_parsed.get('result','')}"
+                                    elif "output" in inner_parsed:
+                                        obs_text = inner_parsed["output"][:500]
+                                    elif "error" in inner_parsed:
+                                        obs_text = f"❌ {inner_parsed['error']}"
+                                    else:
+                                        obs_text = inner[:500]
+                                except (json.JSONDecodeError, TypeError):
+                                    obs_text = inner[:500]
+                            elif isinstance(inner, str):
+                                obs_text = inner[:500]
+                            else:
+                                obs_text = str(inner)[:500]
+                        except (json.JSONDecodeError, TypeError):
+                            obs_text = raw[:500]
+
                     step_data = {
                         "turn": s["step_number"],
                         "type": s["step_type"],
                         "tool_name": s["tool_name"],
                         "thought": s["thought"],
-                        "observation": (s["tool_result"] or "")[:500] if s["tool_result"] else "",
+                        "observation": obs_text,
                     }
                     yield f"data: {json.dumps({'type': 'step', 'step': step_data})}\n\n"
 
