@@ -36,8 +36,8 @@ AGENT_SYSTEM_PROMPT = """你是一个全能的智能助手，拥有丰富的工�
 | stock_query | 查询A股实时行情（涨幅榜/跌幅榜） | stock_query(action='top', market='a') |
 | read_file | 读取文件内容或列出目录 | read_file(path='README.md') |
 | execute_command | 执行系统命令 (ls/cat/git/python等) | execute_command(command='ls -la') |
-| web_search | 搜索互联网获取实时信息 | web_search(query='Python 3.13 新特性') |
-| web_fetch | 抓取网页内容 (配合搜索使用) | web_fetch(url='https://...') |
+| web_search | 智能搜索，自动时效过滤。查行情/新闻自动开24h过滤 | web_search(query='央行最新利率', fresh='d') |
+| web_fetch | 抓取网页详情 (搜索后点进去看全文) | web_fetch(url='https://...') |
 | calculator | 执行数学计算 | calculator(expression='sqrt(144)') |
 | grep_files | 正则搜索代码内容 | grep_files(pattern='TODO', glob='*.py') |
 | glob_files | 按文件名模式查找文件 | glob_files(pattern='**/*.ts') |

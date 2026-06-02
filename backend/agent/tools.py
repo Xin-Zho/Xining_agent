@@ -61,17 +61,66 @@ class Tool:
 
 # ── 通用工具 (来自 codex_test) ────────────────────────────────────────
 
-async def _web_search(query: str, max_results: int = 5) -> dict:
+async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict:
+    """
+    智能搜索：自动感知时效需求，优先返回最新结果。
+
+    fresh: 时间范围 'd'(一天内) / 'w'(一周内) / 'm'(一月内)，留空自动判断。
+    检测到"昨日/今天/最新/实时"等关键词时自动启用 d 级时效过滤。
+    """
+    from datetime import datetime, timezone
+
+    # 自动检测时效需求
+    time_keywords = ["今日", "今天", "昨天", "昨日", "最新", "实时", "刚刚",
+                     "涨幅", "跌", "股票", "行情", "新闻", "发布", "公布",
+                     "today", "latest", "news", "stock", "breaking"]
+    if not fresh:
+        for kw in time_keywords:
+            if kw in query:
+                fresh = "d"
+                break
+
+    # 注入日期上下文，提升搜索精度
+    today_str = datetime.now(timezone.utc).strftime("%Y年%m月%d日")
+    if any(kw in query for kw in ["昨天", "昨日", "今日", "今天", "最新"]):
+        query = f"{query} {today_str}"
+
     try:
+        kwargs = {"max_results": max_results}
+        if fresh:
+            kwargs["timedelta"] = fresh
+
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=max_results))
-        items = [
-            {"title": r["title"], "url": r["href"], "snippet": r["body"]}
-            for r in results
-        ]
-        return {"query": query, "results": items, "count": len(items)}
+            results = list(ddgs.text(query, **kwargs))
+
+        items = []
+        for r in results:
+            items.append({
+                "title": r.get("title", ""),
+                "url": r.get("href", ""),
+                "snippet": r.get("body", "")[:300],
+                "date": r.get("date", ""),
+            })
+
+        # 无结果时回退：去掉时效限制再试
+        if not items and fresh:
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+            items = [
+                {"title": r.get("title", ""), "url": r.get("href", ""),
+                 "snippet": r.get("body", "")[:300]}
+                for r in results
+            ]
+
+        return {
+            "query": query,
+            "fresh": fresh or "auto",
+            "search_date": today_str,
+            "results": items,
+            "count": len(items),
+        }
     except Exception as e:
-        return {"error": str(e), "query": query}
+        return {"error": str(e), "query": query, "hint": "换短关键词重试，或换用 web_fetch 直接抓取URL"}
 
 
 async def _web_fetch(url: str) -> dict:
@@ -417,12 +466,13 @@ TOOLS: list[Tool] = [
     # 通用工具
     Tool(
         name="web_search",
-        description="搜索互联网获取最新信息。输入关键词，返回搜索结果列表（标题、URL、摘要）。",
+        description="智能搜索引擎，自动感知时效需求。查行情/新闻/最新信息自动开启24h过滤，无结果自动回退。需要精确信息时配合 web_fetch 抓取详情页。",
         parameters={
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "搜索关键词"},
-                "max_results": {"type": "integer", "description": "最大返回结果数，默认5"},
+                "query": {"type": "string", "description": "搜索关键词。英文更精准，中文亦可。"},
+                "max_results": {"type": "integer", "description": "返回结果数，默认5，最多10"},
+                "fresh": {"type": "string", "description": "时效过滤: d(24h内) / w(一周) / m(一月)。查实时信息用d，留空自动判断"},
             },
             "required": ["query"],
         },
