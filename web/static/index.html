@@ -451,7 +451,6 @@ body {
                 <option value="normal">💬 快速对话</option>
                 <option value="react">🤖 Agent</option>
                 <option value="plan_solve">🧠 专家模式</option>
-                <option value="claude">🟣 Claude</option>
                 <option value="dify">🌐 Dify</option>
             </select>
             <select class="model-select" id="modelSelect" onchange="onModelChange()">
@@ -734,10 +733,9 @@ async function sendMessage(){
     attachments=[];renderAttachTags();
     const typingRow=addTyping();
     try{
-        const isClaude=agentMode==='claude',isAgent=agentMode!=='normal'&&!isClaude;
+        const isAgent=agentMode!=='normal'&&agentMode!=='dify';
         let url,body;
-        if(isClaude){url='/api/claude/stream';body=JSON.stringify({messages:msgs,model:selectedModel})}
-        else if(isAgent){url='/api/agent/stream';body=JSON.stringify({messages:msgs,model:selectedModel,mode:agentMode})}
+        if(isAgent){url='/api/agent/stream';body=JSON.stringify({messages:msgs,model:selectedModel,mode:agentMode})}
         else{url='/api/chat/stream';body=JSON.stringify({messages:msgs,model:selectedModel})}
         const resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body});
         if(!resp.ok)throw new Error(`服务器错误 ${resp.status}`);

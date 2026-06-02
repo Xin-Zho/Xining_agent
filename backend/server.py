@@ -815,8 +815,28 @@ async def compat_agent_stream(req: LegacyAgentRequest):
             media_type="text/event-stream",
         )
 
-    # 提取最后一条 user 消息
+    # 提取用户消息 + 对话历史上下文
     user_msg = ""
+    history_context = ""
+    # 分离 system 消息和对话消息
+    system_msgs = [m for m in req.messages if m.get("role") == "system"]
+    chat_msgs = [m for m in req.messages if m.get("role") in ("user", "assistant")]
+
+    # 取最近 6 轮对话作为上下文
+    recent = chat_msgs[-12:]  # 最多 6 轮 (user+assistant 各一)
+    if len(recent) > 1:
+        history_lines = []
+        for m in recent[:-1]:  # 除了最后一条 user 消息
+            content = m.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(p.get("text", "") for p in content if p.get("type") == "text")
+            role_label = "用户" if m.get("role") == "user" else "助手"
+            if str(content).strip():
+                history_lines.append(f"{role_label}: {str(content)[:300]}")
+        if history_lines:
+            history_context = "## 对话历史\n" + "\n".join(history_lines) + "\n\n"
+
+    # 提取最后一条 user 消息
     for m in reversed(req.messages):
         if m.get("role") == "user":
             content = m.get("content", "")
@@ -824,10 +844,18 @@ async def compat_agent_stream(req: LegacyAgentRequest):
                 user_msg = " ".join(p.get("text", "") for p in content if p.get("type") == "text")
             else:
                 user_msg = str(content)
-            break
+            if user_msg.strip():
+                break
 
-    if not user_msg:
+    if not user_msg or not user_msg.strip():
         user_msg = "(empty)"
+
+    # 拼接 Agent 的完整任务描述
+    agent_system = ""
+    if system_msgs:
+        agent_system = "## 自定义角色\n" + system_msgs[-1].get("content", "")[:500] + "\n\n"
+
+    full_task = f"{agent_system}{history_context}## 当前任务\n{user_msg}"
 
     agent_mode = req.mode or "react"
     engine = _get_engine(agent_mode)
@@ -839,7 +867,7 @@ async def compat_agent_stream(req: LegacyAgentRequest):
         conn = get_db()
         cur = conn.execute(
             "INSERT INTO agent_tasks (user_id, title, description, status, agent_mode) VALUES (?, ?, ?, 'executing', ?)",
-            (1, user_msg[:50], user_msg, agent_mode),
+            (1, user_msg[:50], full_task, agent_mode),
         )
         conn.commit()
         task_id = cur.lastrowid
@@ -847,7 +875,7 @@ async def compat_agent_stream(req: LegacyAgentRequest):
 
         try:
             # 后台执行 Agent
-            bg_task = asyncio.create_task(engine.run(user_msg, 1, task_id))
+            bg_task = asyncio.create_task(engine.run(full_task, 1, task_id))
 
             # 轮询步骤更新，推送给前端
             last_step = 0
