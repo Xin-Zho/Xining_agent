@@ -66,24 +66,58 @@ async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict
     智能搜索：自动感知时效需求，优先返回最新结果。
 
     fresh: 时间范围 'd'(一天内) / 'w'(一周内) / 'm'(一月内)，留空自动判断。
-    检测到"昨日/今天/最新/实时"等关键词时自动启用 d 级时效过滤。
+    根据用户提问中的时间词（昨天/上周/本月）自动推算目标日期注入搜索词。
     """
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
-    # 自动检测时效需求
+    # 北京时间
+    CST = timezone(timedelta(hours=8))
+    now = datetime.now(CST)
+
+    # 根据用户提问自动推算目标日期
+    target_date = now
+    if "前天" in query:
+        target_date = now - timedelta(days=2)
+    elif "昨天" in query or "昨日" in query:
+        target_date = now - timedelta(days=1)
+    elif "今天" in query or "今日" in query:
+        target_date = now
+    elif "明天" in query or "明日" in query:
+        target_date = now + timedelta(days=1)
+    elif "上周" in query:
+        target_date = now - timedelta(weeks=1)
+    elif "上个月" in query or "上月" in query:
+        target_date = now - timedelta(days=30)
+    elif "本周" in query:
+        target_date = now
+
+    # 自动检测时效需求 → 决定 fresh 级别
     time_keywords = ["今日", "今天", "昨天", "昨日", "最新", "实时", "刚刚",
                      "涨幅", "跌", "股票", "行情", "新闻", "发布", "公布",
-                     "today", "latest", "news", "stock", "breaking"]
+                     "today", "latest", "news", "stock", "breaking", "本周", "这周"]
     if not fresh:
         for kw in time_keywords:
             if kw in query:
                 fresh = "d"
                 break
 
-    # 注入日期上下文，提升搜索精度
-    today_str = datetime.now(timezone.utc).strftime("%Y年%m月%d日")
-    if any(kw in query for kw in ["昨天", "昨日", "今日", "今天", "最新"]):
-        query = f"{query} {today_str}"
+    # 差超过 1 天就用 w 级过滤（避免 d 太窄漏结果）
+    if fresh == "d" and abs((target_date - now).days) > 1:
+        fresh = "w"
+
+    # 注入目标日期上下文，提升搜索精度
+    date_str = target_date.strftime("%Y年%m月%d日")
+    has_time_word = any(kw in query for kw in
+        ["昨天", "昨日", "今日", "今天", "最新", "前天", "明天", "上周", "本周", "这周"])
+    if has_time_word:
+        query = f"{date_str} {query}"
+
+    try:
+        kwargs = {"max_results": max_results}
+        if fresh:
+            kwargs["timedelta"] = fresh
+
+        with DDGS() as ddgs:
 
     try:
         kwargs = {"max_results": max_results}
@@ -115,7 +149,7 @@ async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict
         return {
             "query": query,
             "fresh": fresh or "auto",
-            "search_date": today_str,
+            "search_date": date_str,
             "results": items,
             "count": len(items),
         }
