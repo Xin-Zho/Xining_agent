@@ -115,7 +115,7 @@ async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict
     try:
         kwargs = {"max_results": max_results}
         if fresh:
-            kwargs["timedelta"] = fresh
+            kwargs["timelimit"] = fresh  # DDGS 参数名: timelimit='d' / 'w' / 'm' / 'y'
 
         with DDGS() as ddgs:
             results = list(ddgs.text(query, **kwargs))
