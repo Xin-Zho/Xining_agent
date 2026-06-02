@@ -69,7 +69,7 @@ from .memory import LongTermMemory
 
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 AGENT_RUNTIME = os.environ.get("AGENT_RUNTIME", "claude-code").strip().lower()
-SYSTEM_PROMPT = "你是一个有帮助的AI助手。请用简洁清晰的中文回答用户的问题。"
+SYSTEM_PROMPT = "You are a helpful assistant. Answer concisely in Chinese. IMPORTANT: If asked about real-time events, specific dates, or factual data you are unsure about, you MUST tell the user you don't have real-time access and suggest switching to Agent mode for tool-based verification. Never fabricate earthquake reports, stock prices, news events, or weather data. 用中文回复。"
 MAX_HISTORY_ROUNDS = 20
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
