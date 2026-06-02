@@ -33,6 +33,7 @@ AGENT_SYSTEM_PROMPT = """你是一个全能的智能助手，拥有丰富的工�
 
 | 工具 | 用途 | 示例 |
 |------|------|------|
+| stock_query | 查询A股实时行情（涨幅榜/跌幅榜） | stock_query(action='top', market='a') |
 | read_file | 读取文件内容或列出目录 | read_file(path='README.md') |
 | execute_command | 执行系统命令 (ls/cat/git/python等) | execute_command(command='ls -la') |
 | web_search | 搜索互联网获取实时信息 | web_search(query='Python 3.13 新特性') |
