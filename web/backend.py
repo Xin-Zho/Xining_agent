@@ -437,11 +437,38 @@ async def claude_stream(req: ChatRequest):
     if not user_msg:
         user_msg = "(empty)"
 
+    # 跨平台查找 claude CLI
+    import shutil as _shutil
+
+    def _find_claude():
+        _bin = os.environ.get("CLAUDE_CODE_BIN", "").strip()
+        if _bin and os.path.exists(_bin):
+            return _bin
+        for _cand in [
+            "claude",  # PATH 查找
+            os.path.expanduser("~/.local/bin/claude"),
+            "/usr/local/bin/claude",
+            "/usr/bin/claude",
+            os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "claude.cmd"),
+            r"C:\node_global\claude.cmd",
+        ]:
+            if _cand == "claude":
+                _found = _shutil.which("claude")
+                if _found:
+                    return _found
+            elif os.path.exists(_cand):
+                return _cand
+        return None
+
+    _claude_bin = _find_claude()
+
     def generate():
+        if not _claude_bin:
+            yield f"data: {json.dumps({'error': 'Claude Code CLI 未安装，请运行 npm install -g @anthropic-ai/claude-code'})}\n\n"
+            return
         try:
             proc = subprocess.Popen(
-                [os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "claude.cmd"),
-                 "-p", user_msg, "--output-format", "text"],
+                [_claude_bin, "-p", user_msg, "--output-format", "text"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,

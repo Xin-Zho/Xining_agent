@@ -1,0 +1,1059 @@
+"""
+统一 FastAPI 后端 — 融合 agent_learning + codex_test
+
+Agent 引擎（4 种模式）:
+  - react (DeepSeek ReAct — 增强版 Token 预算 + 并行执行 + 自动反思)
+  - plan_solve (先规划再执行)
+  - reflection (执行 → 评审 → 改进)
+  - claude-code (Claude Code CLI stream-json)
+
+接口列表 (18 REST + 1 WebSocket):
+  POST /api/register              — 注册
+  POST /api/login                 — 登录
+  POST /api/chat                  — 非流式对话
+  POST /api/chat/stream           — 流式对话 (SSE)
+  POST /api/upload                — 文件上传 (含 PDF 解析)
+  GET  /api/conversations         — 对话列表
+  POST /api/conversations         — 创建对话
+  GET  /api/conversations/{id}    — 对话详情
+  POST /api/agent/tasks           — 创建 Agent 任务
+  GET  /api/agent/tasks           — 任务列表
+  GET  /api/agent/tasks/{id}      — 任务详情
+  DELETE /api/agent/tasks/{id}    — 删除任务
+  GET  /api/claude-config         — Claude Code 配置
+  PUT  /api/claude-config         — 更新 Claude Code 配置
+  GET  /api/logs/stats            — 日志统计
+  GET  /api/logs/suggestions      — Prompt 优化建议
+  GET  /api/memory                — 长期记忆列表
+  POST /api/memory                — 保存记忆
+  DELETE /api/memory/{key}        — 删除记忆
+  WS   /ws/agent/{task_id}        — Agent 实时进度
+
+启动方式:
+  python -m uvicorn backend.server:app --host 127.0.0.1 --port 8000
+"""
+import asyncio
+import io
+import json
+import os
+import re
+import subprocess
+import sys
+import threading
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, UploadFile, File, Header
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from openai import OpenAI
+from pydantic import BaseModel
+
+from .database import get_db, init_db, DB_PATH
+from .auth import (
+    create_token, get_current_user, verify_token,
+    hash_password, verify_password, security, SECRET_KEY,
+)
+from .models import (
+    AuthRequest, ChatRequest, CreateConversationRequest, CreateAgentTaskRequest,
+)
+from .agent import AgentEngine, ClaudeCodeEngine, PlanSolveEngine, ReflectionEngine, TOOLS, WebSocketManager
+from .claude_config import load_config, save_config, get_effective_config
+from .llm_client import LLMClient
+from .context_manager import ContextManager
+from .training import DialogueLogger, RuleExtractor
+from .memory import LongTermMemory
+
+# ── Config ──────────────────────────────────────────────────────────────
+
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+AGENT_RUNTIME = os.environ.get("AGENT_RUNTIME", "claude-code").strip().lower()
+SYSTEM_PROMPT = "你是一个有帮助的AI助手。请用简洁清晰的中文回答用户的问题。"
+MAX_HISTORY_ROUNDS = 20
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+ALLOWED_IMAGE = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+ALLOWED_TEXT = {"text/plain", "application/json", "text/csv",
+                "text/markdown", "text/x-python", "application/pdf"}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+
+def _has_valid_deepseek_key() -> bool:
+    return bool(DEEPSEEK_API_KEY and DEEPSEEK_API_KEY != "your-api-key-here")
+
+
+# ── Dependencies ────────────────────────────────────────────────────────
+
+deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com") \
+    if _has_valid_deepseek_key() else None
+
+ws_manager = WebSocketManager()
+llm_client = LLMClient() if deepseek else None
+ctx_manager = ContextManager(llm_client)
+dialogue_logger = DialogueLogger()
+
+# Agent 引擎 (根据 AGENT_RUNTIME 初始化默认引擎)
+_default_engine = None
+if AGENT_RUNTIME == "claude-code":
+    _default_engine = ClaudeCodeEngine(ws_manager, repo_root=PROJECT_ROOT)
+elif AGENT_RUNTIME == "deepseek":
+    if deepseek is None:
+        raise RuntimeError("DEEPSEEK_API_KEY is required when AGENT_RUNTIME=deepseek.")
+    _default_engine = AgentEngine(deepseek, TOOLS, ws_manager)
+else:
+    raise RuntimeError(f"Unsupported AGENT_RUNTIME: {AGENT_RUNTIME}")
+
+# 按需创建 DeepSeek 子引擎
+_react_engine = AgentEngine(deepseek, TOOLS, ws_manager) if deepseek else None
+_plan_solve_engine = PlanSolveEngine(deepseek, TOOLS, ws_manager) if deepseek else None
+_reflection_engine = ReflectionEngine(deepseek, TOOLS, ws_manager) if deepseek else None
+
+
+def _get_engine(agent_mode: str):
+    """根据 agent_mode 返回对应引擎"""
+    if agent_mode == "plan_solve":
+        if _plan_solve_engine is None:
+            raise HTTPException(503, "DeepSeek 未配置，plan_solve 模式不可用")
+        return _plan_solve_engine
+    elif agent_mode == "reflection":
+        if _reflection_engine is None:
+            raise HTTPException(503, "DeepSeek 未配置，reflection 模式不可用")
+        return _reflection_engine
+    elif agent_mode == "react":
+        if _react_engine is None:
+            raise HTTPException(503, "DeepSeek 未配置，react 模式不可用")
+        return _react_engine
+    else:
+        # claude-code 或其他
+        return _default_engine
+
+
+# ── App ─────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Agent Learning — Unified")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ── Auth routes ─────────────────────────────────────────────────────────
+
+@app.post("/api/register")
+def register(body: AuthRequest):
+    if not body.username.strip() or len(body.password) < 4:
+        raise HTTPException(status_code=422, detail="用户名不能为空，密码至少4位")
+
+    conn = get_db()
+    existing = conn.execute(
+        "SELECT id FROM users WHERE username = ?", (body.username.strip(),)
+    ).fetchone()
+    if existing:
+        conn.close()
+        raise HTTPException(status_code=409, detail="用户名已被注册")
+
+    hash_ = hash_password(body.password)
+    cur = conn.execute(
+        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+        (body.username.strip(), hash_),
+    )
+    conn.commit()
+    user_id = cur.lastrowid
+    conn.close()
+    return {"token": create_token(user_id), "username": body.username.strip()}
+
+
+@app.post("/api/login")
+def login(body: AuthRequest):
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, username, password_hash FROM users WHERE username = ?",
+        (body.username.strip(),),
+    ).fetchone()
+    conn.close()
+
+    if not user or not verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+    return {"token": create_token(user["id"]), "username": user["username"]}
+
+
+# ── Chat routes ─────────────────────────────────────────────────────────
+
+@app.post("/api/chat")
+def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
+    conn = get_db()
+
+    if deepseek is None:
+        conn.close()
+        raise HTTPException(status_code=503, detail="DeepSeek chat is not configured.")
+
+    conv = conn.execute(
+        "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+        (body.conversation_id, user["id"]),
+    ).fetchone()
+    if not conv:
+        conn.close()
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    conn.execute(
+        "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'user', ?)",
+        (body.conversation_id, body.message),
+    )
+
+    current_title = conn.execute(
+        "SELECT title FROM conversations WHERE id = ?", (body.conversation_id,)
+    ).fetchone()["title"]
+    if current_title == "新对话":
+        title = body.message[:30] + ("..." if len(body.message) > 30 else "")
+        conn.execute(
+            "UPDATE conversations SET title = ? WHERE id = ?",
+            (title, body.conversation_id),
+        )
+
+    rows = conn.execute(
+        """SELECT role, content FROM messages
+           WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?""",
+        (body.conversation_id, MAX_HISTORY_ROUNDS * 2),
+    ).fetchall()
+    rows = list(reversed(rows))
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for r in rows:
+        messages.append({"role": r["role"], "content": r["content"]})
+
+    try:
+        resp = deepseek.chat.completions.create(
+            model="deepseek-chat",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=4096,
+        )
+        reply = resp.choices[0].message.content
+    except Exception as e:
+        conn.close()
+        raise HTTPException(status_code=502, detail=f"AI API 调用失败: {e}")
+
+    conn.execute(
+        "INSERT INTO messages (conversation_id, role, content) VALUES (?, 'assistant', ?)",
+        (body.conversation_id, reply),
+    )
+    conn.commit()
+    conn.close()
+
+    dialogue_logger.log(
+        user=user["username"], question=body.message, answer=reply,
+        source="chat", model="deepseek-chat",
+        tokens=resp.usage.total_tokens if resp.usage else 0,
+    )
+
+    return {"reply": reply, "conversation_id": body.conversation_id}
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(req: dict | ChatRequest):
+    """
+    流式对话 — SSE 格式
+    兼容两种格式:
+      - 旧前端: {messages: [...], model: "chat"|"reasoner"}
+      - 新移动端: {conversation_id: int, message: str}
+    """
+    if deepseek is None:
+        raise HTTPException(status_code=503, detail="DeepSeek chat is not configured.")
+
+    # 判断请求格式
+    if isinstance(req, dict) and "messages" in req:
+        # 旧前端格式
+        messages = list(req["messages"])
+        model_id = "deepseek-reasoner" if req.get("model") == "reasoner" else "deepseek-chat"
+        user_msg = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                content = m.get("content", "")
+                if isinstance(content, list):
+                    user_msg = " ".join(p.get("text", "") for p in content if p.get("type") == "text")
+                else:
+                    user_msg = str(content)
+                break
+    elif hasattr(req, 'conversation_id'):
+        # 新格式
+        conn = get_db()
+        conv = conn.execute(
+            "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+            (req.conversation_id, get_current_user.__wrapped__),
+        ).fetchone()
+        conn.close()
+        if not conv:
+            raise HTTPException(status_code=404, detail="对话不存在")
+
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        conn2 = get_db()
+        rows = conn2.execute(
+            """SELECT role, content FROM messages
+               WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?""",
+            (req.conversation_id, MAX_HISTORY_ROUNDS * 2),
+        ).fetchall()
+        conn2.close()
+        for r in reversed(rows):
+            messages.append({"role": r["role"], "content": r["content"]})
+        user_msg = req.message
+        model_id = "deepseek-chat"
+    else:
+        raise HTTPException(status_code=422, detail="无效的请求格式")
+
+    cl = deepseek
+
+    def generate():
+        full_reply = ""
+        try:
+            stream = cl.chat.completions.create(
+                model=model_id,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=4096,
+                stream=True,
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    full_reply += delta.content
+                    yield f"data: {json.dumps({'token': delta.content})}\n\n"
+
+            dialogue_logger.log(
+                user="anonymous", question=user_msg[:200], answer=full_reply[:2000],
+                source="chat", model=model_id,
+            )
+            yield f"data: {json.dumps({'done': True, 'full_reply': full_reply})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── File upload ─────────────────────────────────────────────────────────
+
+@app.post("/api/upload")
+async def upload(file: UploadFile = File(...),
+                 user: dict = Depends(get_current_user)):
+    content_bytes = await file.read()
+
+    if len(content_bytes) > MAX_FILE_SIZE:
+        raise HTTPException(400, f"文件过大，最大 {MAX_FILE_SIZE // 1024 // 1024}MB")
+
+    content_type = file.content_type or "application/octet-stream"
+
+    # 图片：返回 base64
+    if content_type in ALLOWED_IMAGE:
+        import base64
+        b64 = base64.b64encode(content_bytes).decode("ascii")
+        return {
+            "ok": True,
+            "filename": file.filename,
+            "content_type": content_type,
+            "is_image": True,
+            "content": f"data:{content_type};base64,{b64}",
+        }
+
+    # 文本文件
+    if content_type in ALLOWED_TEXT:
+        try:
+            text = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = content_bytes.decode("gbk")
+            except Exception:
+                raise HTTPException(400, "无法解码文件内容，请确认文件编码为 UTF-8")
+
+        # PDF 特殊处理
+        if content_type == "application/pdf":
+            try:
+                from PyPDF2 import PdfReader
+                reader = PdfReader(io.BytesIO(content_bytes))
+                text_parts = []
+                for page in reader.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_parts.append(page_text)
+                pdf_text = "\n--- 分页 ---\n".join(text_parts)
+                if not pdf_text.strip():
+                    raise HTTPException(400, "PDF 文件中未提取到文字（可能是扫描件或图片型 PDF）")
+                return {
+                    "ok": True,
+                    "filename": file.filename,
+                    "content_type": content_type,
+                    "is_image": False,
+                    "content": f"[PDF: {file.filename}]\n{pdf_text[:80000]}",
+                }
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(400, f"PDF 解析失败：{str(e)[:100]}")
+
+        return {
+            "ok": True,
+            "filename": file.filename,
+            "content_type": content_type,
+            "is_image": False,
+            "content": text,
+        }
+
+    allowed = ALLOWED_IMAGE | ALLOWED_TEXT
+    allowed_str = ", ".join(sorted(allowed))
+    raise HTTPException(400, f"不支持的文件类型。允许: {allowed_str}")
+
+
+# ── Conversation routes ─────────────────────────────────────────────────
+
+@app.get("/api/conversations")
+def list_conversations(user: dict = Depends(get_current_user)):
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT id, title, created_at FROM conversations
+           WHERE user_id = ? ORDER BY created_at DESC""",
+        (user["id"],),
+    ).fetchall()
+    conn.close()
+    return [
+        {"id": r["id"], "title": r["title"], "created_at": r["created_at"]}
+        for r in rows
+    ]
+
+
+@app.post("/api/conversations")
+def create_conversation(
+    body: CreateConversationRequest, user: dict = Depends(get_current_user)
+):
+    conn = get_db()
+    cur = conn.execute(
+        "INSERT INTO conversations (user_id, title) VALUES (?, ?)",
+        (user["id"], body.title),
+    )
+    conn.commit()
+    conv_id = cur.lastrowid
+    conn.close()
+    return {"id": conv_id, "title": body.title}
+
+
+@app.get("/api/conversations/{conversation_id}")
+def get_conversation(conversation_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    conv = conn.execute(
+        "SELECT id, title, created_at FROM conversations WHERE id = ? AND user_id = ?",
+        (conversation_id, user["id"]),
+    ).fetchone()
+    if not conv:
+        conn.close()
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    msgs = conn.execute(
+        """SELECT role, content, created_at FROM messages
+           WHERE conversation_id = ? ORDER BY created_at""",
+        (conversation_id,),
+    ).fetchall()
+    conn.close()
+    return {
+        "id": conv["id"],
+        "title": conv["title"],
+        "created_at": conv["created_at"],
+        "messages": [
+            {"role": m["role"], "content": m["content"], "created_at": m["created_at"]}
+            for m in msgs
+        ],
+    }
+
+
+# ── Agent task routes ───────────────────────────────────────────────────
+
+@app.post("/api/agent/tasks")
+async def create_agent_task(
+    body: CreateAgentTaskRequest, user: dict = Depends(get_current_user)
+):
+    agent_mode = body.agent_mode or "react"
+    conn = get_db()
+    cur = conn.execute(
+        """INSERT INTO agent_tasks (user_id, title, description, status, agent_mode, conversation_id)
+           VALUES (?, ?, ?, 'pending', ?, ?)""",
+        (user["id"], body.description[:50], body.description, agent_mode, body.conversation_id),
+    )
+    conn.commit()
+    task_id = cur.lastrowid
+    conn.close()
+
+    engine = _get_engine(agent_mode)
+
+    asyncio.create_task(engine.run(
+        task_description=body.description,
+        user_id=user["id"],
+        task_id=task_id,
+    ))
+
+    return {"task_id": task_id, "status": "pending", "agent_mode": agent_mode}
+
+
+@app.get("/api/agent/tasks")
+def list_agent_tasks(user: dict = Depends(get_current_user)):
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT id, title, status, agent_mode, total_tokens, duration_ms, created_at
+           FROM agent_tasks WHERE user_id = ? ORDER BY created_at DESC""",
+        (user["id"],),
+    ).fetchall()
+    conn.close()
+    return [
+        {
+            "id": r["id"], "title": r["title"], "status": r["status"],
+            "agent_mode": r["agent_mode"],
+            "total_tokens": r["total_tokens"], "duration_ms": r["duration_ms"],
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/agent/tasks/{task_id}")
+def get_agent_task(task_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    task = conn.execute(
+        "SELECT * FROM agent_tasks WHERE id = ? AND user_id = ?",
+        (task_id, user["id"]),
+    ).fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    steps = conn.execute(
+        """SELECT step_number, status, step_type, tool_name, tool_args,
+                  tool_result, thought, duration_ms, created_at
+           FROM agent_steps WHERE task_id = ? ORDER BY step_number""",
+        (task_id,),
+    ).fetchall()
+    conn.close()
+
+    return {
+        "id": task["id"],
+        "title": task["title"],
+        "description": task["description"],
+        "status": task["status"],
+        "agent_mode": task["agent_mode"],
+        "plan_json": task["plan_json"],
+        "final_answer": task["final_answer"],
+        "conversation_id": task["conversation_id"],
+        "total_tokens": task["total_tokens"],
+        "duration_ms": task["duration_ms"],
+        "created_at": task["created_at"],
+        "steps": [
+            {
+                "step_number": s["step_number"], "status": s["status"],
+                "step_type": s["step_type"], "tool_name": s["tool_name"],
+                "tool_args": s["tool_args"], "tool_result": s["tool_result"],
+                "thought": s["thought"], "duration_ms": s["duration_ms"],
+            }
+            for s in steps
+        ],
+    }
+
+
+@app.delete("/api/agent/tasks/{task_id}")
+def delete_agent_task(task_id: int, user: dict = Depends(get_current_user)):
+    conn = get_db()
+    task = conn.execute(
+        "SELECT id FROM agent_tasks WHERE id = ? AND user_id = ?",
+        (task_id, user["id"]),
+    ).fetchone()
+    if not task:
+        conn.close()
+        raise HTTPException(status_code=404, detail="任务不存在")
+    conn.execute("DELETE FROM agent_tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── WebSocket ───────────────────────────────────────────────────────────
+
+@app.websocket("/ws/agent/{task_id}")
+async def agent_websocket(websocket: WebSocket, task_id: int):
+    token = websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=4001, reason="Missing token")
+        return
+    try:
+        user = verify_token(token)
+    except HTTPException:
+        await websocket.close(code=4002, reason="Invalid token")
+        return
+
+    conn = get_db()
+    task = conn.execute(
+        "SELECT id, agent_mode FROM agent_tasks WHERE id = ? AND user_id = ?",
+        (task_id, user["id"]),
+    ).fetchone()
+    conn.close()
+    if not task:
+        await websocket.close(code=4004, reason="Task not found")
+        return
+
+    await ws_manager.connect(task_id, websocket, user["id"])
+
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            action = msg.get("action")
+            if action == "cancel":
+                engine = _get_engine(task["agent_mode"])
+                await engine.cancel(task_id)
+            elif action == "confirm":
+                ws_manager.confirmations[task_id] = msg
+    except WebSocketDisconnect:
+        ws_manager.disconnect(task_id)
+
+
+# ── Claude Code config routes ──────────────────────────────────────────
+
+@app.get("/api/claude-config")
+def get_claude_config(user: dict = Depends(get_current_user)):
+    return get_effective_config()
+
+
+@app.put("/api/claude-config")
+def update_claude_config(body: dict, user: dict = Depends(get_current_user)):
+    allowed_keys = {"model", "allowed_tools", "permission_mode", "append_system_prompt", "extra_dirs"}
+    incoming = {k: v for k, v in body.items() if k in allowed_keys}
+
+    current = load_config()
+    for key, value in incoming.items():
+        setattr(current, key, value)
+    save_config(current)
+
+    return get_effective_config()
+
+
+# ── Logs & Insights routes ──────────────────────────────────────────────
+
+@app.get("/api/logs/stats")
+def logs_stats(user: dict = Depends(get_current_user)):
+    return dialogue_logger.stats()
+
+
+@app.get("/api/logs/suggestions")
+def logs_suggestions(user: dict = Depends(get_current_user)):
+    logs = dialogue_logger.get_claude_logs(days=30)
+    extractor = RuleExtractor(logs)
+    suggestions = extractor.generate_prompt_suggestions()
+    return {"ok": True, "total_logs": len(logs), "suggestions": suggestions}
+
+
+# ── Memory routes ───────────────────────────────────────────────────────
+
+@app.get("/api/memory")
+def list_memory(user: dict = Depends(get_current_user)):
+    ltm = LongTermMemory(user["id"])
+    return {"memories": ltm.list_all()}
+
+
+@app.post("/api/memory")
+def save_memory(body: dict, user: dict = Depends(get_current_user)):
+    key = body.get("key", "").strip()
+    value = body.get("value", "").strip()
+    if not key or not value:
+        raise HTTPException(400, "key 和 value 不能为空")
+    ltm = LongTermMemory(user["id"])
+    ltm.save(key, value)
+    return {"ok": True, "key": key}
+
+
+@app.delete("/api/memory/{key}")
+def delete_memory(key: str, user: dict = Depends(get_current_user)):
+    ltm = LongTermMemory(user["id"])
+    ltm.delete(key)
+    return {"ok": True}
+
+
+# ── Agent modes info ────────────────────────────────────────────────────
+
+@app.get("/api/agent/modes")
+def agent_modes():
+    return {
+        "default": AGENT_RUNTIME,
+        "available": [
+            {"id": "react", "name": "ReAct Agent", "description": "思考→行动→观察循环，Token预算 + 并行执行 + 自动反思"},
+            {"id": "plan_solve", "name": "Plan-Solve", "description": "先制定计划，再逐步执行，最后汇总"},
+            {"id": "reflection", "name": "Reflection", "description": "执行 → 自我评审 → 迭代改进"},
+            {"id": "claude-code", "name": "Claude Code", "description": "Claude Code CLI 子进程，全工具支持"},
+        ],
+    }
+
+
+# ── Static files ────────────────────────────────────────────────────────
+
+STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "static")
+
+if os.path.isdir(STATIC_DIR):
+    @app.get("/app")
+    async def web_app():
+        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/")
+def root():
+    return {
+        "name": "Agent Learning — Unified",
+        "version": "2.0.0",
+        "agent_mode": AGENT_RUNTIME,
+        "endpoints": {
+            "auth": ["/api/register", "/api/login"],
+            "chat": ["/api/chat", "/api/chat/stream"],
+            "upload": ["/api/upload"],
+            "conversations": ["/api/conversations", "/api/conversations/{id}"],
+            "agent_tasks": ["/api/agent/tasks", "/api/agent/tasks/{id}"],
+            "agent_modes": ["/api/agent/modes"],
+            "claude_config": ["/api/claude-config"],
+            "logs": ["/api/logs/stats", "/api/logs/suggestions"],
+            "memory": ["/api/memory"],
+            "websocket": ["/ws/agent/{task_id}"],
+        },
+    }
+
+
+# ── 前端兼容路由 (agent_learning Apple HIG 前端) ────────────────────
+# 原 agent_learning 前端使用 /api/auth/* 和 /api/agent/stream 等路径
+
+class LegacyChatRequest(BaseModel):
+    messages: list[dict]
+    model: str = "chat"
+
+
+class LegacyAgentRequest(BaseModel):
+    messages: list[dict]
+    model: str = "chat"
+    mode: str = "react"
+
+
+def _verify_token_from_header(authorization: str | None) -> dict | None:
+    """从 Authorization header 解析 token，返回 user dict 或 None"""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization[7:]
+    try:
+        return verify_token(token)
+    except HTTPException:
+        return None
+
+
+@app.post("/api/auth/register")
+def compat_register(body: AuthRequest):
+    """兼容前端 /api/auth/register 路径，返回 {ok, token, username} 格式"""
+    if not body.username.strip() or len(body.password) < 4:
+        return JSONResponse({"ok": False, "error": "用户名不能为空，密码至少4位"}, 422)
+
+    conn = get_db()
+    existing = conn.execute(
+        "SELECT id FROM users WHERE username = ?", (body.username.strip(),)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return JSONResponse({"ok": False, "error": "用户名已存在"}, 409)
+
+    hash_ = hash_password(body.password)
+    cur = conn.execute(
+        "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+        (body.username.strip(), hash_),
+    )
+    conn.commit()
+    user_id = cur.lastrowid
+    conn.close()
+    return {"ok": True, "token": create_token(user_id), "username": body.username.strip()}
+
+
+@app.post("/api/auth/login")
+def compat_login(body: AuthRequest):
+    """兼容前端 /api/auth/login 路径，返回 {ok, token, username} 格式"""
+    conn = get_db()
+    user = conn.execute(
+        "SELECT id, username, password_hash FROM users WHERE username = ?",
+        (body.username.strip(),),
+    ).fetchone()
+    conn.close()
+
+    if not user or not verify_password(body.password, user["password_hash"]):
+        return JSONResponse({"ok": False, "error": "用户名或密码错误"}, 401)
+
+    return {"ok": True, "token": create_token(user["id"]), "username": user["username"]}
+
+
+@app.get("/api/auth/me")
+def compat_me(authorization: str | None = Header(None)):
+    """兼容前端 /api/auth/me 路径"""
+    user = _verify_token_from_header(authorization)
+    if not user:
+        return JSONResponse({"ok": False, "error": "未登录或 token 已过期"}, 401)
+    return {"ok": True, "username": user["username"]}
+
+
+@app.post("/api/agent/stream")
+async def compat_agent_stream(req: LegacyAgentRequest):
+    """
+    兼容前端 /api/agent/stream — SSE 格式
+    前端发送 {messages, model, mode: "react"|"plan_solve"|"reflection"}
+    后台异步执行 Agent，SSE 推送步骤和结果
+    """
+    if deepseek is None:
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'error': 'DeepSeek 未配置，Agent 不可用'})}\n\n"]),
+            media_type="text/event-stream",
+        )
+
+    # 提取最后一条 user 消息
+    user_msg = ""
+    for m in reversed(req.messages):
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, list):
+                user_msg = " ".join(p.get("text", "") for p in content if p.get("type") == "text")
+            else:
+                user_msg = str(content)
+            break
+
+    if not user_msg:
+        user_msg = "(empty)"
+
+    agent_mode = req.mode or "react"
+    engine = _get_engine(agent_mode)
+
+    async def generate():
+        yield f"data: {json.dumps({'type': 'start', 'mode': agent_mode})}\n\n"
+
+        # 创建临时任务记录
+        conn = get_db()
+        cur = conn.execute(
+            "INSERT INTO agent_tasks (user_id, title, description, status, agent_mode) VALUES (?, ?, ?, 'executing', ?)",
+            (1, user_msg[:50], user_msg, agent_mode),
+        )
+        conn.commit()
+        task_id = cur.lastrowid
+        conn.close()
+
+        try:
+            # 后台执行 Agent
+            bg_task = asyncio.create_task(engine.run(user_msg, 1, task_id))
+
+            # 轮询步骤更新，推送给前端
+            last_step = 0
+            while not bg_task.done():
+                await asyncio.sleep(0.5)
+                conn = get_db()
+                steps = conn.execute(
+                    "SELECT * FROM agent_steps WHERE task_id = ? AND step_number > ? ORDER BY step_number",
+                    (task_id, last_step),
+                ).fetchall()
+                conn.close()
+                for s in steps:
+                    last_step = s["step_number"]
+                    step_data = {
+                        "turn": s["step_number"],
+                        "type": s["step_type"],
+                        "tool_name": s["tool_name"],
+                        "thought": s["thought"],
+                        "observation": (s["tool_result"] or "")[:500] if s["tool_result"] else "",
+                    }
+                    yield f"data: {json.dumps({'type': 'step', 'step': step_data})}\n\n"
+
+            # Agent 完成
+            conn = get_db()
+            task = conn.execute("SELECT * FROM agent_tasks WHERE id = ?", (task_id,)).fetchone()
+            conn.close()
+
+            if task and task["final_answer"]:
+                final = task["final_answer"]
+            else:
+                final = "任务已完成。"
+
+            dialogue_logger.log(
+                user="anonymous", question=user_msg, answer=final,
+                source="agent", model=req.model,
+                tokens=task["total_tokens"] if task else 0,
+            )
+            yield f"data: {json.dumps({'type': 'answer', 'answer': final})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/claude/stream")
+async def compat_claude_stream(req: LegacyChatRequest):
+    """
+    兼容前端 /api/claude/stream — Claude Code CLI 管道模式
+    直接把用户消息喂给 claude -p，stdout 实时流回前端
+    """
+    user_msg = ""
+    for m in reversed(req.messages):
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, list):
+                user_msg = " ".join(p.get("text", "") for p in content if p.get("type") == "text")
+            else:
+                user_msg = str(content)
+            break
+
+    if not user_msg:
+        user_msg = "(empty)"
+
+    # 找 claude CLI（跨平台）
+    claude_bin = None
+    candidates = [
+        os.environ.get("CLAUDE_CODE_BIN", "").strip(),
+        # Linux / macOS
+        "claude",  # 靠 PATH
+        os.path.expanduser("~/.local/bin/claude"),
+        "/usr/local/bin/claude",
+        "/usr/bin/claude",
+        # Windows
+        r"C:\Users\Administrator\AppData\Roaming\npm\claude.cmd",
+        r"C:\node_global\claude.cmd",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        # "claude" 这种短名字用 shutil.which 在 PATH 中查找
+        if candidate == "claude":
+            import shutil
+            found = shutil.which("claude")
+            if found:
+                claude_bin = found
+                break
+        elif Path(candidate).exists():
+            claude_bin = candidate
+            break
+
+    if not claude_bin:
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'error': 'Claude Code CLI 未找到'})}\n\n"]),
+            media_type="text/event-stream",
+        )
+
+    def generate():
+        try:
+            proc = subprocess.Popen(
+                [claude_bin, "-p", user_msg, "--output-format", "text"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=str(PROJECT_ROOT),
+            )
+            ansi_re = re.compile(r'\x1b\[[0-9;]*m')
+            full_output = []
+            for line in proc.stdout:
+                clean = ansi_re.sub('', line)
+                if clean.strip():
+                    full_output.append(clean)
+                    yield f"data: {json.dumps({'token': clean})}\n\n"
+            proc.wait()
+            full_reply = "".join(full_output)
+            dialogue_logger.log(
+                user="anonymous", question=user_msg, answer=full_reply,
+                source="claude", model="claude-code",
+                tokens=sum(len(t) // 3 for t in full_output),
+            )
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except FileNotFoundError:
+            yield f"data: {json.dumps({'error': 'Claude Code CLI 未安装'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── 无状态聊天流式 (兼容前端直接传 messages 数组) ──────────────────
+
+@app.post("/api/chat/stream-legacy")
+async def chat_stream_legacy(req: LegacyChatRequest):
+    """兼容前端直接传 messages 数组的流式对话"""
+    if deepseek is None:
+        return StreamingResponse(
+            iter([f"data: {json.dumps({'error': 'DeepSeek 未配置'})}\n\n"]),
+            media_type="text/event-stream",
+        )
+
+    cl = deepseek
+    model_id = "deepseek-reasoner" if req.model == "reasoner" else "deepseek-chat"
+
+    # Context 管理
+    compressed, token_info = ctx_manager.maybe_compress(req.messages)
+
+    def generate():
+        yield f"data: {json.dumps({'token_info': token_info})}\n\n"
+        full_reply = ""
+        try:
+            stream = cl.chat.completions.create(
+                model=model_id,
+                messages=compressed,
+                temperature=0.7,
+                max_tokens=4096,
+                stream=True,
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    full_reply += delta.content
+                    yield f"data: {json.dumps({'token': delta.content})}\n\n"
+            dialogue_logger.log(
+                user="anonymous", question=str(req.messages[-1].get("content", ""))[:200],
+                answer=full_reply[:2000], source="chat", model=model_id,
+            )
+            yield f"data: {json.dumps({'done': True, 'full_reply': full_reply, 'token_info': token_info})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Startup ─────────────────────────────────────────────────────────────
+
+@app.on_event("startup")
+def startup():
+    init_db()
+    print(f"数据库已初始化: {DB_PATH}")
+    print(f"Agent 模式: {AGENT_RUNTIME}")
+    print(f"DeepSeek: {'已配置' if deepseek else '未配置'}")
+    print(f"API 文档: http://127.0.0.1:8000/docs")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
+
+    uvicorn.run("backend.server:app", host=args.host, port=args.port, reload=True)
+    # If above fails with relative import error, run instead:
+    #   cd D:\agent_learning && python -m backend.server
