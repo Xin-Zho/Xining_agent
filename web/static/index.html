@@ -452,6 +452,7 @@ body {
                 <option value="react">🤖 Agent</option>
                 <option value="plan_solve">🧠 专家模式</option>
                 <option value="claude">🟣 Claude</option>
+                <option value="dify">🌐 Dify</option>
             </select>
             <select class="model-select" id="modelSelect" onchange="onModelChange()">
                 <option value="chat">⚡ 快速</option>
@@ -464,6 +465,24 @@ body {
                 <span class="icon">✦</span>
                 <span>新建一个对话开始聊天</span>
             </div>
+        </div>
+
+        <!-- Dify 嵌入 -->
+        <div id="difyFrame" style="display:none;flex:1;border:none;background:#fff">
+            <iframe id="difyIframe" src="" style="width:100%;height:100%;border:none" allow="clipboard-read;clipboard-write"></iframe>
+        </div>
+        <div id="difySetup" style="display:none;flex:1;align-items:center;justify-content:center;flex-direction:column;gap:16px;padding:40px">
+            <span style="font-size:48px">🌐</span>
+            <h2 style="font-weight:600;color:var(--text-primary)">Dify AI 平台</h2>
+            <p style="color:var(--text-secondary);text-align:center;max-width:360px">
+                拖拽式工作流 · 知识库 RAG · DeepSeek 直连<br>
+                下方嵌入 Dify Cloud，或在<a href="https://cloud.dify.ai" target="_blank" style="color:var(--accent)">新窗口打开 ↗</a>
+            </p>
+            <input id="difyUrl" type="text" placeholder="输入 Dify App URL 或留空使用默认"
+                   style="width:100%;max-width:420px;padding:10px 14px;border:1px solid var(--border);border-radius:var(--r-md);font-size:14px;background:var(--gray-100);color:var(--text-primary)">
+            <button onclick="loadDifyUrl()" class="btn-send interactive" style="border-radius:var(--r-md);padding:10px 24px">
+                加载 Dify
+            </button>
         </div>
 
         <div class="input-area">
@@ -666,7 +685,29 @@ function closeSidebar(){sidebarEl.classList.remove('open');overlayEl.classList.r
 function scrollBottom(){messagesDiv.scrollTop=messagesDiv.scrollHeight}
 function handleKeyDown(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}
 function onModelChange(){selectedModel=modelSelect.value}
-function onAgentModeChange(){agentMode=document.getElementById('agentMode').value}
+function onAgentModeChange(){agentMode=document.getElementById('agentMode').value;toggleDifyUI()}
+function toggleDifyUI(){
+    const isDify=agentMode==='dify';
+    document.getElementById('messages').style.display=isDify?'none':'flex';
+    document.getElementById('difyFrame').style.display=isDify?'flex':'none';
+    document.getElementById('difySetup').style.display=isDify?'flex':'none';
+    document.getElementById('emptyState').style.display=isDify?'none':'flex';
+    document.getElementById('userInput').style.display=isDify?'none':'';
+    document.getElementById('sendBtn').style.display=isDify?'none':'';
+    document.getElementById('attachTags').style.display=isDify?'none':'';
+    document.getElementById('modelSelect').style.display=isDify?'none':'';
+    if(isDify){
+        const saved=localStorage.getItem('dify_url');
+        if(saved){document.getElementById('difyUrl').value=saved;document.getElementById('difyIframe').src=saved}
+    }
+}
+function loadDifyUrl(){
+    let url=document.getElementById('difyUrl').value.trim();
+    if(!url){url='https://cloud.dify.ai/apps'}// 默认 Dify Cloud
+    if(!url.startsWith('http')){url='https://'+url}
+    localStorage.setItem('dify_url',url);
+    document.getElementById('difyIframe').src=url;
+}
 userInput.addEventListener('input',()=>{userInput.style.height='auto';userInput.style.height=Math.min(userInput.scrollHeight,120)+'px'});
 
 // File upload
@@ -690,6 +731,7 @@ messagesDiv.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.fil
 
 // Send message
 async function sendMessage(){
+    if(agentMode==='dify')return;
     const text=userInput.value.trim();
     if((!text&&attachments.length===0)||isStreaming||!currentConvId)return;
     const cv=currentConv();if(!cv)return;
