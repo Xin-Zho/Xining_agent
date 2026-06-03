@@ -650,7 +650,15 @@ function addMsgToDOM(role,content){
     const b=document.createElement('div');b.className='bubble';
     if(Array.isArray(content)){for(const p of content){if(p.type==='text')b.appendChild(document.createTextNode(p.text));else if(p.type==='image_url'){const img=document.createElement('img');img.src=p.image_url.url;b.appendChild(img)}}}
     else if(typeof content==='string'&&content.startsWith('<img'))b.innerHTML=content;
-    else b.textContent=content;
+    else{
+      // 渲染 Markdown 链接 [text](url) 和纯 URL
+      let html=content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      // 匹配 [text](url) 格式
+      html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+|\/[^\)]+)\)/g,'<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">$1</a>');
+      // 匹配裸 URL
+      html=html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g,'$1<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">$2</a>');
+      b.innerHTML=html;
+    }
     row.appendChild(b);messagesDiv.appendChild(row);
 }
 function updateTokenBarMsgCount(count){
@@ -774,7 +782,11 @@ async function sendMessage(){
             else if(d.type==='reflections'){const r=document.createElement('div');r.className='msg-row ai';r.innerHTML='<div class="reflect-bubble">🔄 <b>反思</b><br>'+d.reflections.join('<br>')+'</div>';messagesDiv.appendChild(r);scrollBottom()}
             else if(d.type==='answer'){
                 // 回答放在所有步骤之后
-                aiBubble=addMsgBubble('ai','');aiBubble.textContent=d.answer;full=d.answer;scrollBottom();
+                aiBubble=addMsgBubble('ai','');full=d.answer;
+                let html=d.answer.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+|\/[^\)]+)\)/g,'<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">$1</a>');
+                html=html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g,'$1<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">$2</a>');
+                aiBubble.innerHTML=html;scrollBottom();
             }
             else if(d.done){cv.messages.push({role:'assistant',content:d.full_reply||full});if(d.token_info)updateTokenBar(d.token_info,d.cache)}
             else if(d.token_info){updateTokenBar(d.token_info,d.cache)}
