@@ -90,28 +90,16 @@ llm_client = LLMClient() if deepseek else None
 ctx_manager = ContextManager(llm_client)
 dialogue_logger = DialogueLogger()
 
-# Agent 引擎 (默认 deepseek，claude-code 已移除)
 if deepseek is None:
     raise RuntimeError("DEEPSEEK_API_KEY is required to run Agent engine.")
-_default_engine = AgentEngine(deepseek, TOOLS, ws_manager)
-
-# 按需创建 DeepSeek 子引擎
-_react_engine = AgentEngine(deepseek, TOOLS, ws_manager) if deepseek else None
-_plan_solve_engine = PlanSolveEngine(deepseek, TOOLS, ws_manager) if deepseek else None
 
 
 def _get_engine(agent_mode: str):
-    """根据 agent_mode 返回对应引擎"""
+    """为每个请求创建独立的引擎实例，保证会话隔离"""
     if agent_mode == "plan_solve":
-        if _plan_solve_engine is None:
-            raise HTTPException(503, "DeepSeek 未配置，plan_solve 模式不可用")
-        return _plan_solve_engine
-    elif agent_mode == "react":
-        if _react_engine is None:
-            raise HTTPException(503, "DeepSeek 未配置，react 模式不可用")
-        return _react_engine
+        return PlanSolveEngine(deepseek, TOOLS, ws_manager)
     else:
-        return _default_engine
+        return AgentEngine(deepseek, TOOLS, ws_manager)
 
 
 # ── App ─────────────────────────────────────────────────────────────────
