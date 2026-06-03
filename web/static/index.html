@@ -551,9 +551,16 @@ function getDefaultAgents(){return [
     {id:'_builtin_writer',name:'📝 文档生成器',description:'生成报告、表格、说明书、PPT大纲',systemPrompt:'You are a professional document generator. Your specialties:\n\n1. Use create_document to generate downloadable files — always provide a download link\n2. Use web_search and stock_query for data-backed reports\n3. Generate well-structured Markdown documents with:\n   - Clear headers (## Section)\n   - Data tables (| Column | Column |)\n   - Numbered steps and bullet points\n   - Source citations at the bottom\n4. Document types you can create:\n   - 📊 数据分析报告 (with tables and charts in markdown)\n   - 📋 项目说明书 (structured documentation)\n   - 📈 投资分析报告 (stock data + news + analysis)\n   - 🗂️ CSV data exports (comma-separated, Excel-compatible)\n   - 📄 HTML pages (formatted web documents)\n5. When user asks for a document/report/table/PPT outline, immediately create one\n6. THINK ENGLISH, ANSWER CHINESE',createdAt:1},
     {id:'_builtin_researcher',name:'🔍 深度研究员',description:'多源搜索、交叉验证、学术调研',systemPrompt:'You are a deep research agent. Your methodology:\n\n1. BREAK DOWN the question into sub-questions (2-4 angles)\n2. SEARCH FROM MULTIPLE ANGLES simultaneously:\n   - Different keywords for the same topic\n   - Chinese + English search terms\n   - Multiple sources (news, academic, official)\n3. CROSS-VERIFY: compare findings across sources. Flag contradictions.\n4. GO DEEP: use web_fetch to read full articles, not just snippets\n5. CHECK TIME: always execute_command(date) first for time-sensitive research\n6. SYNTHESIZE into a structured report:\n   - Executive summary (2-3 sentences)\n   - Detailed findings with sources\n   - Cross-source comparison table\n   - Recommendations or conclusions\n7. Use create_document to output the final research report\n8. CITE EVERY CLAIM with source URLs\n9. THINK ENGLISH, ANSWER CHINESE',createdAt:1}
 ]}
-function loadAgents(){try{agents=JSON.parse(localStorage.getItem(skey()+'_a'))||[]}catch(e){agents=[]}
-    // 首次加载时注入预置智能体
-    if(agents.length===0){agents=getDefaultAgents();saveAgents()}
+function loadAgents(){
+    try{agents=JSON.parse(localStorage.getItem(skey()+'_a'))||[]}catch(e){agents=[]}
+    // 注入预置智能体（如果还没有）
+    const defaults=getDefaultAgents();
+    const existingIds=new Set(agents.map(a=>a.id));
+    let changed=false;
+    for(const d of defaults){
+        if(!existingIds.has(d.id)){agents.unshift(d);changed=true}
+    }
+    if(changed)saveAgents();
 }
 function saveAgents(){localStorage.setItem(skey()+'_a',JSON.stringify(agents))}
 function currentConv(){return conversations.find(c=>c.id===currentConvId)||null}
