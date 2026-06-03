@@ -44,7 +44,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect, UploadFile, File, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 from pydantic import BaseModel
@@ -686,6 +686,27 @@ def agent_modes():
     }
 
 
+# ── Downloads listing ──────────────────────────────────────────────────
+
+@app.get("/api/downloads")
+def list_downloads():
+    """列出所有可下载文件"""
+    dl_dir = os.path.join(STATIC_DIR, "downloads")
+    if not os.path.isdir(dl_dir):
+        return {"files": [], "count": 0}
+    files = []
+    for f in sorted(os.listdir(dl_dir), reverse=True):
+        fp = os.path.join(dl_dir, f)
+        if os.path.isfile(fp):
+            from urllib.parse import quote
+            files.append({
+                "name": f,
+                "size": os.path.getsize(fp),
+                "url": f"/static/downloads/{quote(f, safe='/')}",
+            })
+    return {"files": files, "count": len(files)}
+
+
 # ── Static files ────────────────────────────────────────────────────────
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "static")
@@ -694,6 +715,29 @@ if os.path.isdir(STATIC_DIR):
     @app.get("/app")
     async def web_app():
         return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+    @app.get("/downloads")
+    async def downloads_page():
+        dl_dir = os.path.join(STATIC_DIR, "downloads")
+        files_html = ""
+        if os.path.isdir(dl_dir):
+            from urllib.parse import quote
+            for f in sorted(os.listdir(dl_dir), reverse=True):
+                fp = os.path.join(dl_dir, f)
+                if os.path.isfile(fp):
+                    sz = os.path.getsize(fp)
+                    sz_str = f"{sz/1024:.0f}KB" if sz > 1024 else f"{sz}B"
+                    encoded = quote(f, safe='/')
+                    files_html += f'<tr><td><a href="/static/downloads/{encoded}">📥 {f}</a></td><td>{sz_str}</td></tr>'
+        html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>下载文件</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;background:#FAFAFB;color:#18181B}}
+h1{{font-size:24px;margin-bottom:8px}}table{{width:100%;border-collapse:collapse;margin-top:20px}}
+td{{padding:10px 12px;border-bottom:1px solid #E5E7EB}}a{{color:#5B6AF0;text-decoration:none}}a:hover{{text-decoration:underline}}
+.back{{display:inline-block;margin-top:24px;color:#71717A;font-size:14px}}</style></head><body>
+<h1>📂 下载文件</h1><p>Agent 生成的所有可下载文件</p>
+<table>{files_html or '<tr><td>暂无文件</td></tr>'}</table>
+<a class="back" href="/app">← 返回聊天</a></body></html>"""
+        return HTMLResponse(content=html)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
