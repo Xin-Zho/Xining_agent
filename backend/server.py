@@ -870,9 +870,14 @@ async def compat_agent_stream(req: LegacyAgentRequest):
 
         # 创建临时任务记录
         conn = get_db()
+
+        # 获取用户ID（单用户模式，取第一个用户）
+        uid_row = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
+        user_id = uid_row["id"] if uid_row else 1
+
         cur = conn.execute(
             "INSERT INTO agent_tasks (user_id, title, description, status, agent_mode) VALUES (?, ?, ?, 'executing', ?)",
-            (1, user_msg[:50], full_task, agent_mode),
+            (user_id, user_msg[:50], full_task, agent_mode),
         )
         conn.commit()
         task_id = cur.lastrowid
@@ -880,7 +885,7 @@ async def compat_agent_stream(req: LegacyAgentRequest):
 
         try:
             # 后台执行 Agent
-            bg_task = asyncio.create_task(engine.run(full_task, 1, task_id))
+            bg_task = asyncio.create_task(engine.run(full_task, user_id, task_id))
 
             # 轮询步骤更新，推送给前端
             last_step = 0
