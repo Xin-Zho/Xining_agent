@@ -548,9 +548,10 @@ async def _create_excel(filename: str, data_json: str) -> dict:
 
         wb.save(filepath)
         wb.close()
+        _record_download(_current_user_id.get(), safe_name, filepath, _os.path.getsize(filepath))
 
         from urllib.parse import quote as _quote
-        encoded_url = "/static/downloads/" + _quote(safe_name, safe='/')
+        encoded_url = "/api/download/" + _quote(safe_name, safe='/')
         return {
             "filename": safe_name, "file_type": "xlsx",
             "size_bytes": _os.path.getsize(filepath),
@@ -625,9 +626,10 @@ async def _create_docx(filename: str, markdown_content: str) -> dict:
             del _create_docx._table
 
         doc.save(filepath)
+        _record_download(_current_user_id.get(), safe_name, filepath, _os.path.getsize(filepath))
 
         from urllib.parse import quote as _quote
-        encoded_url = "/static/downloads/" + _quote(safe_name, safe='/')
+        encoded_url = "/api/download/" + _quote(safe_name, safe='/')
         return {
             "filename": safe_name, "file_type": "docx",
             "size_bytes": _os.path.getsize(filepath),
@@ -702,6 +704,21 @@ async def _memory_search(query: str = "", action: str = "search", key: str = "",
 
 # ── 文件生成工具 ──────────────────────────────────────────────────────────
 
+def _record_download(user_id: int, filename: str, filepath: str, size: int):
+    """记录文件归属"""
+    from ..database import get_db
+    try:
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO downloads (user_id, filename, filepath, size_bytes) VALUES (?, ?, ?, ?)",
+            (user_id, filename, filepath, size),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # 记录失败不阻塞文件生成
+
+
 async def _create_document(filename: str, content: str, file_type: str = "md") -> dict:
     """
     创建可下载文件。支持 Markdown 表格、CSV、HTML、Python 脚本等。
@@ -726,10 +743,10 @@ async def _create_document(filename: str, content: str, file_type: str = "md") -
     except Exception as e:
         return {"error": str(e), "filename": safe_name}
 
-    download_url = f"/static/downloads/{safe_name}"
-    # URL-encode Chinese characters in the filename
+    _record_download(_current_user_id.get(), safe_name, filepath, _os.path.getsize(filepath))
+    download_url = f"/api/download/{safe_name}"
     from urllib.parse import quote as _quote
-    encoded_url = "/static/downloads/" + _quote(safe_name, safe='/')
+    encoded_url = "/api/download/" + _quote(safe_name, safe='/')
     return {
         "filename": safe_name,
         "file_type": file_type,

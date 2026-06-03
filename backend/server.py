@@ -661,24 +661,46 @@ def agent_modes():
     }
 
 
-# ── Downloads listing ──────────────────────────────────────────────────
+# ── Downloads (user-scoped) ────────────────────────────────────────────
+
+@app.get("/api/download/{filename:path}")
+def download_file(filename: str, user: dict = Depends(get_current_user)):
+    """下载文件（检查归属权限）。用户只能下载自己生成的文件。"""
+    dl_dir = os.path.join(STATIC_DIR, "downloads")
+    filepath = os.path.join(dl_dir, os.path.basename(filename))
+    if not os.path.isfile(filepath):
+        raise HTTPException(404, "文件不存在")
+
+    # 权限检查：admin 可看所有，普通用户只看自己的
+    conn = get_db()
+    row = conn.execute(
+        "SELECT user_id FROM downloads WHERE filepath = ? ORDER BY id DESC LIMIT 1",
+        (filepath,),
+    ).fetchone()
+    conn.close()
+
+    if row and row["user_id"] != user["id"]:
+        raise HTTPException(403, "无权访问此文件")
+
+    return FileResponse(filepath, filename=os.path.basename(filename))
+
 
 @app.get("/api/downloads")
-def list_downloads():
-    """列出所有可下载文件"""
-    dl_dir = os.path.join(STATIC_DIR, "downloads")
-    if not os.path.isdir(dl_dir):
-        return {"files": [], "count": 0}
-    files = []
-    for f in sorted(os.listdir(dl_dir), reverse=True):
-        fp = os.path.join(dl_dir, f)
-        if os.path.isfile(fp):
-            from urllib.parse import quote
-            files.append({
-                "name": f,
-                "size": os.path.getsize(fp),
-                "url": f"/static/downloads/{quote(f, safe='/')}",
-            })
+def list_downloads(user: dict = Depends(get_current_user)):
+    """列出当前用户的可下载文件"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT filename, filepath, size_bytes, created_at FROM downloads WHERE user_id = ? ORDER BY created_at DESC",
+        (user["id"],),
+    ).fetchall()
+    conn.close()
+    from urllib.parse import quote
+    files = [
+        {"name": r["filename"], "size": r["size_bytes"],
+         "url": f"/api/download/{quote(r['filename'], safe='/')}",
+         "created": r["created_at"]}
+        for r in rows
+    ]
     return {"files": files, "count": len(files)}
 
 
@@ -692,25 +714,27 @@ if os.path.isdir(STATIC_DIR):
         return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
     @app.get("/downloads")
-    async def downloads_page():
-        dl_dir = os.path.join(STATIC_DIR, "downloads")
+    async def downloads_page(user: dict = Depends(get_current_user)):
+        from urllib.parse import quote
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT filename, size_bytes, created_at FROM downloads WHERE user_id = ? ORDER BY created_at DESC",
+            (user["id"],),
+        ).fetchall()
+        conn.close()
         files_html = ""
-        if os.path.isdir(dl_dir):
-            from urllib.parse import quote
-            for f in sorted(os.listdir(dl_dir), reverse=True):
-                fp = os.path.join(dl_dir, f)
-                if os.path.isfile(fp):
-                    sz = os.path.getsize(fp)
-                    sz_str = f"{sz/1024:.0f}KB" if sz > 1024 else f"{sz}B"
-                    encoded = quote(f, safe='/')
-                    files_html += f'<tr><td><a href="/static/downloads/{encoded}">📥 {f}</a></td><td>{sz_str}</td></tr>'
+        for r in rows:
+            sz = r["size_bytes"]
+            sz_str = f"{sz/1024:.0f}KB" if sz > 1024 else f"{sz}B"
+            encoded = quote(r["filename"], safe='/')
+            files_html += f'<tr><td><a href="/api/download/{encoded}">📥 {r["filename"]}</a></td><td>{sz_str}</td><td>{r["created_at"]}</td></tr>'
         html = f"""<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><title>下载文件</title>
 <style>body{{font-family:system-ui,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;background:#FAFAFB;color:#18181B}}
 h1{{font-size:24px;margin-bottom:8px}}table{{width:100%;border-collapse:collapse;margin-top:20px}}
-td{{padding:10px 12px;border-bottom:1px solid #E5E7EB}}a{{color:#5B6AF0;text-decoration:none}}a:hover{{text-decoration:underline}}
+th{{text-align:left;padding:10px 12px;border-bottom:2px solid #E5E7EB;font-size:12px;color:#71717A;text-transform:uppercase;letter-spacing:0.5px}}td{{padding:10px 12px;border-bottom:1px solid #E5E7EB}}a{{color:#5B6AF0;text-decoration:none}}a:hover{{text-decoration:underline}}
 .back{{display:inline-block;margin-top:24px;color:#71717A;font-size:14px}}</style></head><body>
 <h1>📂 下载文件</h1><p>Agent 生成的所有可下载文件</p>
-<table>{files_html or '<tr><td>暂无文件</td></tr>'}</table>
+<table><tr><th>文件</th><th>大小</th><th>时间</th></tr>{files_html or '<tr><td colspan=3>暂无文件</td></tr>'}</table>
 <a class="back" href="/app">← 返回聊天</a></body></html>"""
         return HTMLResponse(content=html)
 

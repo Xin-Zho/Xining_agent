@@ -90,6 +90,17 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_agent_memory_user
             ON agent_memory(user_id, key);
+
+        CREATE TABLE IF NOT EXISTS downloads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            filename TEXT NOT NULL,
+            filepath TEXT NOT NULL,
+            size_bytes INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_downloads_user
+            ON downloads(user_id, created_at);
     """)
     conn.commit()
     conn.close()
