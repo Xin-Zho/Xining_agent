@@ -742,16 +742,18 @@ async function sendMessage(){
         else{url='/api/chat/stream';body=JSON.stringify({messages:msgs,model:selectedModel})}
         const resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body});
         if(!resp.ok)throw new Error(`服务器错误 ${resp.status}`);
-        typingRow.remove();const aiBubble=addMsgBubble('ai','');let full='';
+        typingRow.remove();let aiBubble=null;let full='';
         const reader=resp.body.getReader(),decoder=new TextDecoder();let buf='';
         while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n\n');buf=lines.pop();for(const line of lines){if(!line.startsWith('data: '))continue;let d;try{d=JSON.parse(line.slice(6))}catch(e){continue}
-            if(d.type==='step'){
+            if(d.type==='start'){
+                // Agent 模式：先不创建回答气泡，等步骤走完再显示答案
+            }
+            else if(d.type==='step'){
                 const step=d.step;
                 let label='', detail='';
                 if(step.type==='tool_call'){
                   label='🔧 <b>'+((step.tool_name||'工具')+'</b>');
                   let obs=step.observation||'';
-                  // 解析 observation JSON，提取可读内容
                   if(typeof obs==='string'&&obs.startsWith('{')){
                     try{const o=JSON.parse(obs);obs=o.result||o.content||o.observation||obs}catch(e){}
                   }
@@ -770,10 +772,18 @@ async function sendMessage(){
             }
             else if(d.type==='plan'){const p=document.createElement('div');p.className='msg-row ai';p.innerHTML='<div class="plan-bubble">📋 <b>计划</b><br>'+d.plan.map((s,i)=>(i+1)+'. '+s).join('<br>')+'</div>';messagesDiv.appendChild(p);scrollBottom()}
             else if(d.type==='reflections'){const r=document.createElement('div');r.className='msg-row ai';r.innerHTML='<div class="reflect-bubble">🔄 <b>反思</b><br>'+d.reflections.join('<br>')+'</div>';messagesDiv.appendChild(r);scrollBottom()}
-            else if(d.type==='answer'){aiBubble.textContent=d.answer;full=d.answer;scrollBottom()}
+            else if(d.type==='answer'){
+                // 回答放在所有步骤之后
+                aiBubble=addMsgBubble('ai','');aiBubble.textContent=d.answer;full=d.answer;scrollBottom();
+            }
             else if(d.done){cv.messages.push({role:'assistant',content:d.full_reply||full});if(d.token_info)updateTokenBar(d.token_info,d.cache)}
             else if(d.token_info){updateTokenBar(d.token_info,d.cache)}
-            else if(d.token){if(!aiBubble||aiBubble.parentElement===null){aiBubble=addMsgBubble('ai','')}full+=d.token;aiBubble.textContent=full;scrollBottom()}
+            else if(d.token){
+                if(!isAgent){
+                  if(!aiBubble||aiBubble.parentElement===null){aiBubble=addMsgBubble('ai','')}
+                  full+=d.token;aiBubble.textContent=full;scrollBottom();
+                }
+            }
         }}
     }catch(e){typingRow.remove();addMsgToDOM('ai','❌ '+e.message)}
     finally{cv.updatedAt=Date.now();saveConvs();renderSidebar();sendBtnEl.disabled=false;isStreaming=false;userInput.focus()}
