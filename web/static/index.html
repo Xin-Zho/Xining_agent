@@ -949,12 +949,11 @@ function updateTokenBar(info,cacheInfo){
 // Changelog
 function showChangelog(){
     const items=[
+        '前端 Markdown 渲染：表格/加粗/代码/标题/列表全部支持',
         '跨会话记忆：自动记住对话关键发现，下次打开不遗忘',
         '上下文压缩：LLM 摘要替代暴力截断，长对话不丢信息',
         '会话隔离：每次请求独立 Agent 实例，消除并发串扰',
         '工具权限确认：危险操作执行前弹窗确认，支持允许/拒绝',
-        '支持 PDF 文件解析（上传或 read_pdf 工具）',
-        'DeepSeek 缓存优化：精简提示词+工具定义内嵌，降低 token 成本',
     ];
     document.getElementById('changelogList').innerHTML=items.map(s=>'<li>'+s+'</li>').join('');
     document.getElementById('changelogToast').classList.add('show');
