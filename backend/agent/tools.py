@@ -481,9 +481,60 @@ async def _stock_query(action: str = "top", market: str = "a", count: int = 10) 
         return {"error": str(e), "action": action, "hint": "新浪接口可能暂时不可用，建议用 web_search 搜索股票行情替代"}
 
 
+# ── 文件生成工具 ──────────────────────────────────────────────────────────
+
+async def _create_document(filename: str, content: str, file_type: str = "md") -> dict:
+    """
+    创建可下载文件。支持 Markdown 表格、CSV、HTML、Python 脚本等。
+    文件保存在 /static/downloads/ 目录，返回直接下载链接。
+    """
+    import os as _os
+    downloads_dir = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+        "web", "static", "downloads"
+    )
+    _os.makedirs(downloads_dir, exist_ok=True)
+
+    # 安全检查文件名
+    safe_name = "".join(c for c in filename if c.isalnum() or c in "._- ()[]")
+    if not safe_name:
+        safe_name = f"document.{file_type}"
+
+    filepath = _os.path.join(downloads_dir, safe_name)
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        return {"error": str(e), "filename": safe_name}
+
+    download_url = f"/static/downloads/{safe_name}"
+    return {
+        "filename": safe_name,
+        "file_type": file_type,
+        "size_bytes": _os.path.getsize(filepath),
+        "download_url": download_url,
+        "message": f"文件已生成，下载链接: {download_url}",
+    }
+
+
 # ── 工具注册表 ──────────────────────────────────────────────────────────
 
 TOOLS: list[Tool] = [
+    # 文件生成工具
+    Tool(
+        name="create_document",
+        description="创建可下载文件（Markdown表格、CSV、HTML、Python脚本等）。生成后返回下载链接给用户。适合做报表、数据汇总、文档。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "文件名，如 'stock_report.md' 或 'data.csv'"},
+                "content": {"type": "string", "description": "文件内容。Markdown用|表格|、HTML用标签、CSV用逗号分隔"},
+                "file_type": {"type": "string", "description": "文件类型: md/csv/html/py/txt，默认md"},
+            },
+            "required": ["filename", "content"],
+        },
+        handler=_create_document,
+    ),
     # 股票工具
     Tool(
         name="stock_query",
