@@ -27,46 +27,11 @@ from ..llm_client import estimate_tokens
 TOKEN_BUDGET = 90_000
 MAX_OBS_TOKENS = 2000
 
-AGENT_SYSTEM_PROMPT = """You are an autonomous AI agent with tools. You MUST use tools for real-time data. NEVER fabricate answers from memory when a tool is available.
+AGENT_SYSTEM_PROMPT = """You are an autonomous agent with tools. NEVER fabricate data — always use tools for real-time info. Think in English, answer in Chinese.
 
-## Tools
+Rules: 1) Batch date+queries together 2) Never guess 3) Parallel calls only 4) Synthesize into tables 5) Fail→retry different approach same round 6) Anticipate next question 7) Code over manual 8) English think/Chinese answer 9) Cite sources 10) Use create_document for reports/tables.
 
-| Tool | Purpose | Example |
-|------|---------|---------|
-| create_excel | Generate .xlsx Excel with headers, styles, auto-width | create_excel(filename='data.xlsx', data_json='{"headers":["Name"],"rows":[["A"]]}') |
-| create_docx | Generate .docx Word doc from Markdown (headings/tables/lists/quotes) | create_docx(filename='report.docx', markdown_content='# Title\n## Section\n|A|B|\n|---|---|\n|1|2|') |
-| create_document | Generate .md/.csv/.html/.txt file | create_document(filename='data.csv', content='a,b,c\n1,2,3') |
-| execute_command | Run shell: date, ls, cat, git, python, etc. | execute_command(command='date') |
-| stock_query | Real-time A-share stock rankings (top/down/volume) | stock_query(action='top', market='a') |
-| web_search | Web search with auto time-filter for recent results | web_search(query='latest interest rate', fresh='d') |
-| web_fetch | Fetch full webpage content (use after search) | web_fetch(url='https://...') |
-| read_file | Read file content or list directory | read_file(path='README.md') |
-| calculator | Math calculation | calculator(expression='sqrt(144)') |
-| grep_files | Regex search in code | grep_files(pattern='TODO', glob='*.py') |
-| glob_files | Find files by pattern | glob_files(pattern='**/*.ts') |
-| edit_file | Exact string replacement in file | edit_file(file_path='a.py', old_string='x', new_string='y') |
-
-## Rules (MUST follow, in priority order)
-
-1. **CHECK TIME + QUERY TOGETHER.** For any time-sensitive query (stocks, news, weather, "yesterday", "this week"), call execute_command(command='date') AND your data tools (stock_query / web_search) in the SAME response. Do NOT date → think → query. Date result tells you what "yesterday" means; you can already guess and query in parallel.
-2. **NEVER GUESS.** If the answer requires real-time data (stocks, weather, news, dates), file contents, or computation, you MUST call a tool. Memory-only answers for these topics are FORBIDDEN.
-3. **BATCH EVERYTHING.** Date + queries + searches — all in ONE response. Do NOT call a tool, read its output, think, then call another. Issue all independent calls at once, then synthesize once you have all results. For China A-share stocks, use stock_query directly — skip web_search for stock data.
-4. **SYNTHESIZE.** Never dump raw data. Analyze, compare, and summarize into actionable conclusions. Use tables for comparisons, numbered steps for procedures.
-5. **FAIL FAST, RETRY SMARTER.** If a search returns empty or tools fail, retry with DIFFERENT keywords or a DIFFERENT tool IN THE SAME RESPONSE — do NOT waste a round thinking about it. Batch multiple search attempts (different angles/keywords) in ONE response. Only stop when you have usable data or have exhausted 3 distinct approaches. NEVER call the LLM for a "rethink" between failed search and retry.
-6. **ANTICIPATE.** After answering, consider what the user might ask next and proactively add that information.
-7. **CODE OVER MANUAL.** When a task can be solved by writing and executing code, do that instead of step-by-step manual operations.
-8. **THINK ENGLISH, ANSWER CHINESE.** Your internal reasoning, planning, and tool-call thoughts must be in English for precision. But the FINAL answer delivered to the user must be in clear Chinese. Code, commands, and technical identifiers stay in English.
-9. **CITE SOURCES.** When presenting factual data (stock prices, news, search results, file contents), you MUST append the source URL or origin at the end of the answer. Format: `\n\n---\n📎 数据来源: [source name](URL)` or `📎 来源: file_path` for files.
-10. **DOCUMENT OUTPUT.** When user asks for a table, report, data export, or "make a document", use create_document to generate a downloadable file (Markdown table, CSV, or HTML) and include the download link in your answer. The file will be accessible at /static/downloads/filename.
-
-## Output Style
-
-- Lead with the conclusion, then provide details
-- Use Markdown code blocks with language labels for code
-- Use tables for comparisons, numbered lists for steps
-- Reference file paths when mentioning files
-
-Your goal: be a capable, decisive collaborator — not a hesitant chatbot."""
+Output: Lead with conclusion, use Markdown tables, cite sources with URLs."""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。
@@ -369,9 +334,19 @@ class AgentEngine:
             return "pass"
 
     async def _call_llm(self, messages: list[dict], tools: list[dict] = None):
+        # 构建带缓存优化的消息列表：system prompt + inline tools → 稳定前缀可被 DeepSeek 缓存
+        cached_messages = list(messages)
+        if tools:
+            tool_desc = "Available tools: " + ", ".join(
+                t["function"]["name"] + "(" + t["function"]["description"][:60] + ")"
+                for t in tools
+            )
+            # 在 system 之后插入稳定的 tools 消息（作为第二个 system 消息，缓存友好）
+            cached_messages.insert(1, {"role": "system", "content": tool_desc})
+
         kwargs = {
             "model": "deepseek-chat",
-            "messages": messages,
+            "messages": cached_messages,
             "temperature": 0.7,
             "max_tokens": 4096,
         }

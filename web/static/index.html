@@ -870,11 +870,11 @@ function updateTokenBar(info,cacheInfo){
 // Changelog
 function showChangelog(){
     const items=[
-        '新增 Excel(.xlsx) 和 Word(.docx) 文件生成',
+        'DeepSeek 缓存优化：精简提示词+工具定义内嵌，降低 token 成本',
+        '新增 Excel(.xlsx) 和 Word(.docx) 文件生成工具',
         '预置 4 个专家智能体：股票分析师/代码助手/文档生成器/深度研究员',
         'Agent 搜索优化：多角度并行搜索，减少无效思考轮次',
-        '下载文件浏览页 /downloads + 中文文件名 URL 编码修复',
-        '专家模式全面升级，对齐 Agent 模式的优化规则',
+        'Font 大小切换：侧边栏底部「标准/大号」选择，偏好持久化',
     ];
     document.getElementById('changelogList').innerHTML=items.map(s=>'<li>'+s+'</li>').join('');
     document.getElementById('changelogToast').classList.add('show');

@@ -13,32 +13,7 @@ from .tools import Tool
 from .websocket_manager import WebSocketManager, _save_step, _update_step, _update_task
 from ..llm_client import estimate_tokens
 
-PLAN_SOLVE_SYSTEM_PROMPT = """You are a planning and execution agent. Your job is to break down complex tasks, execute each step with tools, and synthesize a final answer.
-
-## Workflow
-
-**Phase 1 — PLAN**: Analyze the task. Output 2-5 concrete, actionable steps. Each step must specify WHAT tool to use. Format:
-[PLAN]
-1. Use execute_command('date') to check current time
-2. Use stock_query(action='top') to get ranking data
-3. Use web_search to find related news
-...
-
-**Phase 2 — EXECUTE**: Run each step. For each step: call ALL tools for that step in ONE response (parallelize!). If a tool fails, immediately retry with different parameters — do NOT think about it, just retry.
-
-**Phase 3 — SYNTHESIZE**: Combine all step results into a final answer with tables, analysis, and sources.
-
-## Rules (MUST follow, in priority order)
-
-1. **CHECK TIME + QUERY TOGETHER.** For time-sensitive tasks, call execute_command('date') AND data tools in the SAME response.
-2. **NEVER GUESS.** Real-time data, file contents, or computation → MUST use tools. Memory-only answers FORBIDDEN.
-3. **BATCH EVERYTHING.** All independent calls in ONE response. Do NOT sequence what can run in parallel.
-4. **SYNTHESIZE.** Never dump raw data. Tables for comparisons, numbered steps for procedures.
-5. **FAIL FAST, RETRY SMARTER.** Empty search → different keywords SAME response. Do NOT think between retries.
-6. **THINK ENGLISH, ANSWER CHINESE.** Internal reasoning in English, final answer in clear Chinese.
-7. **CITE SOURCES.** Append source URLs for all factual data.
-8. **DOCUMENT OUTPUT.** When user wants tables or reports, use create_document and include the download link.
-9. **MINIMIZE STEPS.** Plan ≤5 steps. Merge steps where possible."""
+PLAN_SOLVE_SYSTEM_PROMPT = """You are a planning+execution agent. Plan→Execute→Synthesize in ≤5 steps. Think English, answer Chinese. Never guess—use tools. Batch calls, fail fast, cite sources. Use create_document for reports/tables. Output with Markdown tables and source URLs."""
 
 
 class PlanSolveEngine:
@@ -237,9 +212,16 @@ class PlanSolveEngine:
             })
 
     async def _call_llm(self, messages: list[dict], tools: list[dict] = None):
+        cached_messages = list(messages)
+        if tools:
+            tool_desc = "Tools: " + ", ".join(
+                t["function"]["name"] + "(" + t["function"]["description"][:50] + ")"
+                for t in tools
+            )
+            cached_messages.insert(1, {"role": "system", "content": tool_desc})
         kwargs = {
             "model": "deepseek-chat",
-            "messages": messages,
+            "messages": cached_messages,
             "temperature": 0.7,
             "max_tokens": 4096,
         }
