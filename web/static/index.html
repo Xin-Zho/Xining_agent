@@ -433,7 +433,9 @@ body {
         <label for="authUser">用户名</label>
         <input type="text" id="authUser" placeholder="请输入用户名" autocomplete="username">
         <label for="authPass">密码</label>
-        <input type="password" id="authPass" placeholder="请输入密码" autocomplete="current-password">
+        <input type="password" id="authPass" placeholder="请输入密码（8位以上）" autocomplete="current-password">
+        <label for="authCode" id="authCodeLabel" style="display:none">注册认证码</label>
+        <input type="text" id="authCode" placeholder="请输入注册认证码" style="display:none">
         <button class="btn-primary interactive" id="authBtn" onclick="handleAuth()">登 录</button>
         <div class="auth-error" id="authError"></div>
         <div class="auth-switch">
@@ -626,19 +628,26 @@ function getAgent(id){return agents.find(a=>a.id===id)||null}
 // Auth
 function toggleAuthMode(){
     isLoginMode=!isLoginMode;
-    if(isLoginMode){authTitle.textContent='登录';authSubtitle.textContent='欢迎回来';authBtn.textContent='登 录';swText.textContent='没有账号？';swLink.textContent='注册'}
-    else{authTitle.textContent='注册';authSubtitle.textContent='创建新账号';authBtn.textContent='注 册';swText.textContent='已有账号？';swLink.textContent='登录'}
+    if(isLoginMode){authTitle.textContent='登录';authSubtitle.textContent='欢迎回来';authBtn.textContent='登 录';swText.textContent='没有账号？';swLink.textContent='注册';document.getElementById('authCodeLabel').style.display='none';document.getElementById('authCode').style.display='none'}
+    else{authTitle.textContent='注册';authSubtitle.textContent='创建新账号';authBtn.textContent='注 册';swText.textContent='已有账号？';swLink.textContent='登录';document.getElementById('authCodeLabel').style.display='block';document.getElementById('authCode').style.display='block'}
     authError.textContent='';
 }
 async function handleAuth(){
     const u=document.getElementById('authUser').value.trim(),p=document.getElementById('authPass').value.trim();
     if(!u||!p){authError.textContent='请填写用户名和密码';return}
+    if(!isLoginMode){
+        if(p.length<8){authError.textContent='密码至少8位，需包含字母和数字';return}
+        if(!/[a-zA-Z]/.test(p)||!/[0-9]/.test(p)){authError.textContent='密码必须包含字母和数字';return}
+        const code=document.getElementById('authCode').value.trim();
+        if(!code){authError.textContent='请输入注册认证码';return}
+    }
     const url=isLoginMode?'/api/auth/login':'/api/auth/register';
+    const body=isLoginMode?{username:u,password:p}:{username:u,password:p,invite_code:document.getElementById('authCode').value.trim()};
     try{
-        const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+        const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
         const d=await r.json();
         if(!d.ok){authError.textContent=d.error;return}
-        if(!isLoginMode){alert('注册成功，请登录');toggleAuthMode();document.getElementById('authUser').value=u;document.getElementById('authPass').value='';return}
+        if(!isLoginMode){alert('注册成功，请登录');toggleAuthMode();document.getElementById('authUser').value=u;document.getElementById('authPass').value='';document.getElementById('authCode').value='';return}
         userToken=d.token;username=d.username;
         localStorage.setItem('auth_token',userToken);localStorage.setItem('auth_username',username);
         showChatPage();

@@ -66,6 +66,7 @@ from .memory import LongTermMemory
 
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "false").strip().lower() != "false"
+INVITE_CODE = os.environ.get("INVITE_CODE", "xin-agent-2026")
 MAX_HISTORY_ROUNDS = 20
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -121,7 +122,9 @@ app.add_middleware(
 def register(body: AuthRequest):
     if not ALLOW_REGISTRATION:
         raise HTTPException(status_code=403, detail="注册已关闭")
-    if not body.username.strip() or len(body.password) < 4:
+    if getattr(body, 'invite_code', '') != INVITE_CODE:
+        raise HTTPException(status_code=403, detail="认证码错误")
+    if not body.username.strip() or len(body.password) < 8:
         raise HTTPException(status_code=422, detail="用户名不能为空，密码至少4位")
 
     conn = get_db()
@@ -764,7 +767,9 @@ def compat_register(body: AuthRequest):
     """兼容前端 /api/auth/register 路径，返回 {ok, token, username} 格式"""
     if not ALLOW_REGISTRATION:
         return JSONResponse({"ok": False, "error": "注册已关闭"}, 403)
-        return JSONResponse({"ok": False, "error": "用户名不能为空，密码至少4位"}, 422)
+    if getattr(body, 'invite_code', '') != INVITE_CODE:
+        return JSONResponse({"ok": False, "error": "认证码错误"}, 403)
+    if not body.username.strip() or len(body.password) < 8:
 
     conn = get_db()
     existing = conn.execute(

@@ -4,6 +4,7 @@ from pydantic import BaseModel
 class AuthRequest(BaseModel):
     username: str
     password: str
+    invite_code: str = ""
 
 
 class ChatRequest(BaseModel):
