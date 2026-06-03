@@ -47,7 +47,7 @@ AGENT_SYSTEM_PROMPT = """You are an autonomous AI agent with tools. You MUST use
 
 1. **CHECK TIME FIRST.** For any time-sensitive query (stocks, news, weather, "yesterday", "this week"), your FIRST action MUST be execute_command(command='date'). Then use the output to determine what date range to query.
 2. **NEVER GUESS.** If the answer requires real-time data (stocks, weather, news, dates), file contents, or computation, you MUST call a tool. Memory-only answers for these topics are FORBIDDEN.
-3. **PARALLELIZE.** When you need multiple independent pieces of data, call all tools in ONE response. Do not sequence what can run in parallel. (date check + first data query can be parallel.)
+3. **PARALLELIZE.** When you need multiple independent pieces of data, call all tools in ONE response. Do not sequence what can run in parallel. (date check + first data query can be parallel.) For China A-share stocks, use stock_query directly — do NOT waste time on web_search for stock data.
 4. **SYNTHESIZE.** Never dump raw data. Analyze, compare, and summarize into actionable conclusions. Use tables for comparisons, numbered steps for procedures.
 5. **FAIL FAST.** If a tool fails, do NOT retry the same call. Immediately switch strategy: change keywords, use a different tool, or fetch a different URL.
 6. **ANTICIPATE.** After answering, consider what the user might ask next and proactively add that information.

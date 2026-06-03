@@ -113,9 +113,9 @@ async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict
         query = f"{date_str} {query}"
 
     try:
-        kwargs = {"max_results": max_results}
+        kwargs = {"max_results": max_results, "backend": "html"}  # html=ddg直连，避免Bing被墙
         if fresh:
-            kwargs["timelimit"] = fresh  # DDGS 参数名: timelimit='d' / 'w' / 'm' / 'y'
+            kwargs["timelimit"] = fresh
 
         with DDGS() as ddgs:
             results = list(ddgs.text(query, **kwargs))
@@ -129,10 +129,11 @@ async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict
                 "date": r.get("date", ""),
             })
 
-        # 无结果时回退：去掉时效限制再试
-        if not items and fresh:
+        # 无结果时回退：去掉时效限制 + 换 lite 后端再试
+        if not items:
+            kwargs2 = {"max_results": max_results, "backend": "lite"}
             with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=max_results))
+                results = list(ddgs.text(query, **kwargs2))
             items = [
                 {"title": r.get("title", ""), "url": r.get("href", ""),
                  "snippet": r.get("body", "")[:300]}
@@ -147,7 +148,12 @@ async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict
             "count": len(items),
         }
     except Exception as e:
-        return {"error": str(e), "query": query, "hint": "换短关键词重试，或换用 web_fetch 直接抓取URL"}
+        err = str(e)
+        if "timeout" in err.lower() or "connect" in err.lower():
+            hint = "搜索服务暂时连接超时，建议换用 stock_query 查股票 / web_fetch 直接抓取URL"
+        else:
+            hint = "换短关键词重试，或换用 web_fetch 直接抓取URL"
+        return {"error": err, "query": query, "hint": hint}
 
 
 async def _web_fetch(url: str) -> dict:
