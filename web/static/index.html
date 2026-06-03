@@ -732,15 +732,7 @@ function addMsgToDOM(role,content){
     const b=document.createElement('div');b.className='bubble';
     if(Array.isArray(content)){for(const p of content){if(p.type==='text')b.appendChild(document.createTextNode(p.text));else if(p.type==='image_url'){const img=document.createElement('img');img.src=p.image_url.url;b.appendChild(img)}}}
     else if(typeof content==='string'&&content.startsWith('<img'))b.innerHTML=content;
-    else{
-      // 渲染 Markdown 链接 [text](url) 和纯 URL
-      let html=content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      // 匹配 [text](url) 格式
-      html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+|\/[^\)]+)\)/g,'<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">$1</a>');
-      // 匹配裸 URL
-      html=html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g,'$1<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">$2</a>');
-      b.innerHTML=html;
-    }
+    else{b.innerHTML=renderMarkdown(content);}
     row.appendChild(b);messagesDiv.appendChild(row);
 }
 function updateTokenBarMsgCount(count){
@@ -814,6 +806,51 @@ function renderAttachTags(){
 messagesDiv.addEventListener('dragover',e=>e.preventDefault());
 messagesDiv.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.files.length>0)handleFileSelect(e.dataTransfer.files)});
 
+// Markdown renderer
+function renderMarkdown(text){
+    let html=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // 代码块 ```...```
+    html=html.replace(/```(\w*)\n([\s\S]*?)```/g,'<pre style="background:var(--slate-1);padding:10px;border-radius:6px;overflow-x:auto;font-family:var(--font-mono);font-size:var(--text-xs)"><code>$2</code></pre>');
+    // 行内代码 `...`
+    html=html.replace(/`([^`]+)`/g,'<code style="background:var(--slate-1);padding:1px 5px;border-radius:3px;font-family:var(--font-mono);font-size:var(--text-xs)">$1</code>');
+    // 表格 |...|...|
+    html=html.replace(/((?:^\|.+\|\n?)+)/gm,function(m){
+        const lines=m.trim().split('\n').filter(l=>l.includes('|'));
+        if(lines.length<2)return m;
+        const isSep=l=>/^\|[\s\-:|]+\|$/.test(l);
+        let tbl='<table style="border-collapse:collapse;width:100%;margin:8px 0;font-size:var(--text-xs)">';
+        for(let i=0;i<lines.length;i++){
+            if(isSep(lines[i]))continue;
+            const cells=lines[i].split('|').filter(c=>c.trim());
+            const tag=i===0||(i===1&&isSep(lines[1]))?'th':'td';
+            const style=tag==='th'?'style="background:var(--slate-1);font-weight:600;padding:6px 10px;border:1px solid var(--border);text-align:left"':'style="padding:6px 10px;border:1px solid var(--border)"';
+            tbl+='<tr>'+cells.map(c=>'<'+tag+' '+style+'>'+c.trim()+'</'+tag+'>').join('')+'</tr>';
+            if(i===0&&isSep(lines[1]))i++;
+        }
+        return tbl+'</table>';
+    });
+    // 标题 ### / ## / #
+    html=html.replace(/^#### (.+)$/gm,'<h4 style="font-size:var(--text-sm);font-weight:600;margin:10px 0 4px">$1</h4>');
+    html=html.replace(/^### (.+)$/gm,'<h3 style="font-size:var(--text-base);font-weight:600;margin:12px 0 4px">$1</h3>');
+    html=html.replace(/^## (.+)$/gm,'<h2 style="font-size:var(--text-md);font-weight:700;margin:14px 0 6px">$1</h2>');
+    html=html.replace(/^# (.+)$/gm,'<h1 style="font-size:var(--text-lg);font-weight:700;margin:16px 0 8px">$1</h1>');
+    // 加粗 **text**
+    html=html.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+    // 分隔线 ---
+    html=html.replace(/^---$/gm,'<hr style="border:none;border-top:1px solid var(--border);margin:12px 0">');
+    // 无序列表 - item
+    html=html.replace(/^- (.+)$/gm,'<li style="margin-left:16px">$1</li>');
+    // 有序列表 1. item
+    html=html.replace(/^\d+\. (.+)$/gm,'<li style="margin-left:16px">$1</li>');
+    // 链接 [text](url)
+    html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+|\/[^\)]+)\)/g,'<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">$1</a>');
+    // 裸 URL
+    html=html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g,'$1<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">$2</a>');
+    // 换行
+    html=html.replace(/\n/g,'<br>');
+    return html;
+}
+
 // Send message
 async function sendMessage(){
     if(agentMode==='dify')return;
@@ -883,10 +920,7 @@ async function sendMessage(){
             else if(d.type==='answer'){
                 // 回答放在所有步骤之后
                 aiBubble=addMsgBubble('ai','');full=d.answer;
-                let html=d.answer.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-                html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+|\/[^\)]+)\)/g,'<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">$1</a>');
-                html=html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g,'$1<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">$2</a>');
-                aiBubble.innerHTML=html;scrollBottom();
+                aiBubble.innerHTML=renderMarkdown(d.answer);scrollBottom();
             }
             else if(d.done){cv.messages.push({role:'assistant',content:d.full_reply||full});if(d.token_info)updateTokenBar(d.token_info,d.cache)}
             else if(d.token_info){updateTokenBar(d.token_info,d.cache)}
