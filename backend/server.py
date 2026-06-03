@@ -846,12 +846,14 @@ def compat_me(authorization: str | None = Header(None)):
 
 
 @app.post("/api/agent/stream")
-async def compat_agent_stream(req: LegacyAgentRequest):
+async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None = Header(None)):
     """
     兼容前端 /api/agent/stream — SSE 格式
-    前端发送 {messages, model, mode: "react"|"plan_solve"|"reflection"}
+    前端发送 {messages, model, mode} + Authorization header
     后台异步执行 Agent，SSE 推送步骤和结果
     """
+    # 从 token 获取当前用户
+    current_user = _verify_token_from_header(authorization) if authorization else None
     if deepseek is None:
         return StreamingResponse(
             iter([f"data: {json.dumps({'error': 'DeepSeek 未配置，Agent 不可用'})}\n\n"]),
@@ -909,9 +911,8 @@ async def compat_agent_stream(req: LegacyAgentRequest):
         # 创建临时任务记录
         conn = get_db("agent")
 
-        # 获取用户ID（单用户模式，取第一个用户）
-        uid_row = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
-        user_id = uid_row["id"] if uid_row else 1
+        # 从 token 取当前用户 ID
+        user_id = current_user["id"] if current_user else 1
 
         # 设置当前用户上下文（供 memory_search 工具使用）
         from .agent.tools import set_current_user

@@ -873,7 +873,7 @@ async function sendMessage(){
         let url,body;
         if(isAgent){url='/api/agent/stream';body=JSON.stringify({messages:msgs,model:selectedModel,mode:agentMode})}
         else{url='/api/chat/stream';body=JSON.stringify({messages:msgs,model:selectedModel})}
-        const resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body});
+        const resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+userToken},body});
         if(!resp.ok)throw new Error(`服务器错误 ${resp.status}`);
         typingRow.remove();let aiBubble=null;let full='';
         const reader=resp.body.getReader(),decoder=new TextDecoder();let buf='';
