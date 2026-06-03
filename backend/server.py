@@ -1,11 +1,10 @@
 """
 统一 FastAPI 后端 — 融合 agent_learning + codex_test
 
-Agent 引擎（4 种模式）:
+Agent 引擎（3 种模式）:
   - react (DeepSeek ReAct — 增强版 Token 预算 + 并行执行 + 自动反思)
   - plan_solve (先规划再执行)
   - reflection (执行 → 评审 → 改进)
-  - claude-code (Claude Code CLI stream-json)
 
 接口列表 (18 REST + 1 WebSocket):
   POST /api/register              — 注册
@@ -58,7 +57,7 @@ from .auth import (
 from .models import (
     AuthRequest, ChatRequest, CreateConversationRequest, CreateAgentTaskRequest,
 )
-from .agent import AgentEngine, ClaudeCodeEngine, PlanSolveEngine, ReflectionEngine, TOOLS, WebSocketManager
+from .agent import AgentEngine, PlanSolveEngine, ReflectionEngine, TOOLS, WebSocketManager
 from .claude_config import load_config, save_config, get_effective_config
 from .llm_client import LLMClient
 from .context_manager import ContextManager
@@ -68,9 +67,6 @@ from .memory import LongTermMemory
 # ── Config ──────────────────────────────────────────────────────────────
 
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-AGENT_RUNTIME = os.environ.get("AGENT_RUNTIME", "claude-code").strip().lower()
-SYSTEM_PROMPT = "You are a helpful assistant. Answer concisely in Chinese. IMPORTANT: If asked about real-time events, specific dates, or factual data you are unsure about, you MUST tell the user you don't have real-time access and suggest switching to Agent mode for tool-based verification. Never fabricate earthquake reports, stock prices, news events, or weather data. 用中文回复。"
-
 ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "true").strip().lower() == "true"
 MAX_HISTORY_ROUNDS = 20
 
@@ -96,16 +92,10 @@ llm_client = LLMClient() if deepseek else None
 ctx_manager = ContextManager(llm_client)
 dialogue_logger = DialogueLogger()
 
-# Agent 引擎 (根据 AGENT_RUNTIME 初始化默认引擎)
-_default_engine = None
-if AGENT_RUNTIME == "claude-code":
-    _default_engine = ClaudeCodeEngine(ws_manager, repo_root=PROJECT_ROOT)
-elif AGENT_RUNTIME == "deepseek":
-    if deepseek is None:
-        raise RuntimeError("DEEPSEEK_API_KEY is required when AGENT_RUNTIME=deepseek.")
-    _default_engine = AgentEngine(deepseek, TOOLS, ws_manager)
-else:
-    raise RuntimeError(f"Unsupported AGENT_RUNTIME: {AGENT_RUNTIME}")
+# Agent 引擎 (默认 deepseek，claude-code 已移除)
+if deepseek is None:
+    raise RuntimeError("DEEPSEEK_API_KEY is required to run Agent engine.")
+_default_engine = AgentEngine(deepseek, TOOLS, ws_manager)
 
 # 按需创建 DeepSeek 子引擎
 _react_engine = AgentEngine(deepseek, TOOLS, ws_manager) if deepseek else None
@@ -128,7 +118,6 @@ def _get_engine(agent_mode: str):
             raise HTTPException(503, "DeepSeek 未配置，react 模式不可用")
         return _react_engine
     else:
-        # claude-code 或其他
         return _default_engine
 
 
@@ -688,12 +677,11 @@ def delete_memory(key: str, user: dict = Depends(get_current_user)):
 @app.get("/api/agent/modes")
 def agent_modes():
     return {
-        "default": AGENT_RUNTIME,
+        "default": "react",
         "available": [
             {"id": "react", "name": "ReAct Agent", "description": "思考→行动→观察循环，Token预算 + 并行执行 + 自动反思"},
             {"id": "plan_solve", "name": "Plan-Solve", "description": "先制定计划，再逐步执行，最后汇总"},
             {"id": "reflection", "name": "Reflection", "description": "执行 → 自我评审 → 迭代改进"},
-            {"id": "claude-code", "name": "Claude Code", "description": "Claude Code CLI 子进程，全工具支持"},
         ],
     }
 
@@ -715,7 +703,7 @@ def root():
     return {
         "name": "Agent Learning — Unified",
         "version": "2.0.0",
-        "agent_mode": AGENT_RUNTIME,
+        "agent_mode": "react",
         "endpoints": {
             "auth": ["/api/register", "/api/login"],
             "chat": ["/api/chat", "/api/chat/stream"],
@@ -973,94 +961,6 @@ async def compat_agent_stream(req: LegacyAgentRequest):
     )
 
 
-@app.post("/api/claude/stream")
-async def compat_claude_stream(req: LegacyChatRequest):
-    """
-    兼容前端 /api/claude/stream — Claude Code CLI 管道模式
-    直接把用户消息喂给 claude -p，stdout 实时流回前端
-    """
-    user_msg = ""
-    for m in reversed(req.messages):
-        if m.get("role") == "user":
-            content = m.get("content", "")
-            if isinstance(content, list):
-                user_msg = " ".join(p.get("text", "") for p in content if p.get("type") == "text")
-            else:
-                user_msg = str(content)
-            break
-
-    if not user_msg:
-        user_msg = "(empty)"
-
-    # 找 claude CLI（跨平台）
-    claude_bin = None
-    candidates = [
-        os.environ.get("CLAUDE_CODE_BIN", "").strip(),
-        # Linux / macOS
-        "claude",  # 靠 PATH
-        os.path.expanduser("~/.local/bin/claude"),
-        "/usr/local/bin/claude",
-        "/usr/bin/claude",
-        # Windows
-        r"C:\Users\Administrator\AppData\Roaming\npm\claude.cmd",
-        r"C:\node_global\claude.cmd",
-    ]
-    for candidate in candidates:
-        if not candidate:
-            continue
-        # "claude" 这种短名字用 shutil.which 在 PATH 中查找
-        if candidate == "claude":
-            import shutil
-            found = shutil.which("claude")
-            if found:
-                claude_bin = found
-                break
-        elif Path(candidate).exists():
-            claude_bin = candidate
-            break
-
-    if not claude_bin:
-        return StreamingResponse(
-            iter([f"data: {json.dumps({'error': 'Claude Code CLI 未找到'})}\n\n"]),
-            media_type="text/event-stream",
-        )
-
-    def generate():
-        try:
-            proc = subprocess.Popen(
-                [claude_bin, "-p", user_msg, "--output-format", "text"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                cwd=str(PROJECT_ROOT),
-            )
-            ansi_re = re.compile(r'\x1b\[[0-9;]*m')
-            full_output = []
-            for line in proc.stdout:
-                clean = ansi_re.sub('', line)
-                if clean.strip():
-                    full_output.append(clean)
-                    yield f"data: {json.dumps({'token': clean})}\n\n"
-            proc.wait()
-            full_reply = "".join(full_output)
-            dialogue_logger.log(
-                user="anonymous", question=user_msg, answer=full_reply,
-                source="claude", model="claude-code",
-                tokens=sum(len(t) // 3 for t in full_output),
-            )
-            yield f"data: {json.dumps({'done': True})}\n\n"
-        except FileNotFoundError:
-            yield f"data: {json.dumps({'error': 'Claude Code CLI 未安装'})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-    )
-
-
 # ── 无状态聊天流式 (兼容前端直接传 messages 数组) ──────────────────
 
 @app.post("/api/chat/stream-legacy")
@@ -1115,7 +1015,7 @@ async def chat_stream_legacy(req: LegacyChatRequest):
 def startup():
     init_db()
     print(f"数据库已初始化: {DB_PATH}")
-    print(f"Agent 模式: {AGENT_RUNTIME}")
+    print(f"Agent 模式: react")
     print(f"DeepSeek: {'已配置' if deepseek else '未配置'}")
     print(f"API 文档: http://127.0.0.1:8000/docs")
 
