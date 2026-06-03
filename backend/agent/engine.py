@@ -57,13 +57,13 @@ Q: "read this PDF report"
 
 ## Rules
 
+0. **EXAMPLES FIRST.** Before executing any task, SCAN the Examples section above. If your task matches or resembles an example, follow that pattern EXACTLY. Do not invent a different approach.
 1. Batch date+queries together — ONE response, not date→think→query
-2. NEVER answer without tools if question needs data: files, documents, memories, stocks, news, weather ALL require tool calls. If you say "task completed" without calling a tool, you FAILED.
-3. Imitate the examples above — tool then answer, not answer without tool
-4. Synthesize into Markdown tables with sources
-5. Fail→retry different approach same round (different keywords, different tool)
-6. Think English, answer Chinese
-7. Use create_document for reports/tables — always include download link"""
+2. NEVER answer without tools if question needs data. If you say "task completed" without calling a tool, you FAILED.
+3. Synthesize into Markdown tables with sources
+4. Fail→retry different approach same round (different keywords, different tool)
+5. Think English, answer Chinese
+6. Use create_document for reports/tables — always include download link"""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。

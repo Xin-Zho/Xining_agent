@@ -112,48 +112,46 @@ async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict
     if has_time_word:
         query = f"{date_str} {query}"
 
+    items = []
+
+    # ── 百度搜索（国内优先，快）───
     try:
-        kwargs = {"max_results": max_results, "backend": "html"}  # html=ddg直连，避免Bing被墙
-        if fresh:
-            kwargs["timelimit"] = fresh
+        import urllib.request as _ureq, re as _re
+        baidu_url = f"https://www.baidu.com/s?wd={_ureq.quote(query)}&rn={max_results}"
+        req = _ureq.Request(baidu_url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        with _ureq.urlopen(req, timeout=6) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        for m in _re.finditer(r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, _re.DOTALL):
+            url = m.group(1)
+            title = _re.sub(r'<[^>]+>', '', m.group(2)).strip()
+            if url.startswith("http") and title and "百度" not in title:
+                items.append({"title": title, "url": url, "snippet": "", "source": "baidu"})
+                if len(items) >= max_results: break
+    except Exception:
+        pass  # 百度挂了不阻塞
 
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, **kwargs))
-
-        items = []
-        for r in results:
-            items.append({
-                "title": r.get("title", ""),
-                "url": r.get("href", ""),
-                "snippet": r.get("body", "")[:300],
-                "date": r.get("date", ""),
-            })
-
-        # 无结果时回退：去掉时效限制 + 换 lite 后端再试
-        if not items:
-            kwargs2 = {"max_results": max_results, "backend": "lite"}
+    # ── DuckDuckGo 兜底 ────────
+    if not items:
+        try:
+            kwargs = {"max_results": max_results, "backend": "html"}
+            if fresh:
+                kwargs["timelimit"] = fresh
             with DDGS() as ddgs:
-                results = list(ddgs.text(query, **kwargs2))
-            items = [
-                {"title": r.get("title", ""), "url": r.get("href", ""),
-                 "snippet": r.get("body", "")[:300]}
-                for r in results
-            ]
+                results = list(ddgs.text(query, **kwargs))
+            for r in results:
+                items.append({"title": r.get("title",""), "url": r.get("href",""),
+                              "snippet": (r.get("body","") or "")[:300], "source": "ddg"})
+        except Exception:
+            pass
 
-        return {
-            "query": query,
-            "fresh": fresh or "auto",
-            "search_date": date_str,
-            "results": items,
-            "count": len(items),
-        }
-    except Exception as e:
-        err = str(e)
-        if "timeout" in err.lower() or "connect" in err.lower():
-            hint = "搜索服务暂时连接超时，建议换用 stock_query 查股票 / web_fetch 直接抓取URL"
-        else:
-            hint = "换短关键词重试，或换用 web_fetch 直接抓取URL"
-        return {"error": err, "query": query, "hint": hint}
+    if not items:
+        return {"query": query, "results": [], "count": 0,
+                "hint": "均无结果，换短关键词或用 web_fetch 直接抓取URL"}
+
+    return {"query": query, "fresh": fresh or "auto", "search_date": date_str,
+            "results": items[:max_results], "count": len(items)}
 
 
 async def _web_fetch(url: str) -> dict:
