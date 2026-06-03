@@ -8,7 +8,6 @@ Context 窗口管理 — 防止消息过长超出模型限制
 
 DeepSeek 上下文窗口：chat=128K, reasoner=128K
 """
-import json
 
 # ============================================================
 # 配置
@@ -30,15 +29,7 @@ SUMMARY_PROMPT = """请将以下对话历史总结为一段简洁的文字，保
 """
 
 
-def estimate_tokens(text: str) -> int:
-    """
-    简单 token 估算。
-    中文约 1.5~2 chars/token，英文约 3~4 chars/token。
-    取保守值 3 chars/token，宁可多估不少估。
-    """
-    if not text:
-        return 0
-    return max(1, len(text) // 3)
+from .llm_client import estimate_tokens
 
 
 def count_messages_tokens(messages: list[dict]) -> int:
@@ -49,15 +40,12 @@ def count_messages_tokens(messages: list[dict]) -> int:
         if isinstance(content, str):
             total += estimate_tokens(content)
         elif isinstance(content, list):
-            # 多模态消息：[{type: "text", text: "..."}, {type: "image_url", ...}]
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "text":
                     total += estimate_tokens(part.get("text", ""))
                 elif isinstance(part, dict) and part.get("type") == "image_url":
-                    # 图片估算约 1000 token（DeepSeek 官方数据）
                     total += 1000
-        # role 字段本身约占 2 token
-        total += 2
+        total += 2  # role 字段约 2 token
     return total
 
 
@@ -83,7 +71,7 @@ class ContextManager:
                     传 None 则只做简单截断，不做摘要。
         """
         self.client = llm_client
-        self.compression_count = 0  # 统计压缩次数
+        self.compression_count = 0
 
     def maybe_compress(self, messages: list[dict]) -> tuple[list[dict], dict]:
         """
@@ -106,21 +94,17 @@ class ContextManager:
         other_msgs = [m for m in messages if m["role"] != "system"]
 
         if len(other_msgs) <= KEEP_RECENT:
-            # 消息不多但 token 超了（可能是超长文件）
-            # 简单截断每条消息内容
             compressed = system_msgs + self._truncate_messages(other_msgs)
         else:
             recent = other_msgs[-KEEP_RECENT:]
             old = other_msgs[:-KEEP_RECENT]
 
             if self.client:
-                # 调 LLM 生成摘要
                 summary = self._summarize(old)
                 compressed = system_msgs + [
                     {"role": "system", "content": f"[历史摘要]\n{summary}"}
                 ] + recent
             else:
-                # 没有 LLM 客户端，丢弃旧消息
                 compressed = system_msgs + recent
 
         after_tokens = count_messages_tokens(compressed)
@@ -133,7 +117,6 @@ class ContextManager:
 
     def _summarize(self, old_messages: list[dict]) -> str:
         """调用 LLM 将旧消息总结为一段文字"""
-        # 把旧消息转成可读文本
         lines = []
         for msg in old_messages:
             role = msg.get("role", "?")
@@ -145,7 +128,6 @@ class ContextManager:
 
         conversation = "\n".join(lines)
 
-        # 如果内容太多，先截断再让 LLM 总结
         if len(conversation) > 8000:
             conversation = conversation[:8000] + "\n...(内容过长已截断)"
 
@@ -155,8 +137,7 @@ class ContextManager:
             summary_msgs = [{"role": "user", "content": prompt}]
             summary = self.client.chat(summary_msgs)
             return summary
-        except Exception as e:
-            # 摘要失败 → 直接截断
+        except Exception:
             return f"（对话历史过长已截断，保留了最近 {KEEP_RECENT} 条消息）"
 
     def _truncate_messages(self, messages: list[dict]) -> list[dict]:
