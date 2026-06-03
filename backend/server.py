@@ -665,13 +665,16 @@ def agent_modes():
 
 @app.get("/api/download/{filename:path}")
 def download_file(filename: str, user: dict = Depends(get_current_user)):
-    """下载文件（检查归属权限）。用户只能下载自己生成的文件。"""
+    """下载文件（检查归属权限）。admin 可看所有，用户只看自己的。"""
     dl_dir = os.path.join(STATIC_DIR, "downloads")
     filepath = os.path.join(dl_dir, os.path.basename(filename))
     if not os.path.isfile(filepath):
         raise HTTPException(404, "文件不存在")
 
-    # 权限检查：admin 可看所有，普通用户只看自己的
+    # admin 可看所有
+    if user.get("username") == "admin":
+        return FileResponse(filepath, filename=os.path.basename(filename))
+
     conn = get_db()
     row = conn.execute(
         "SELECT user_id FROM downloads WHERE filepath = ? ORDER BY id DESC LIMIT 1",
@@ -679,7 +682,7 @@ def download_file(filename: str, user: dict = Depends(get_current_user)):
     ).fetchone()
     conn.close()
 
-    if row and row["user_id"] != user["id"]:
+    if not row or row["user_id"] != user["id"]:
         raise HTTPException(403, "无权访问此文件")
 
     return FileResponse(filepath, filename=os.path.basename(filename))
