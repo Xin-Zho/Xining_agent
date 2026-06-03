@@ -88,7 +88,7 @@ class AgentEngine:
 
                 # ── Token 预算检查 ─────────────────────────
                 if total_tokens > TOKEN_BUDGET:
-                    messages = self._emergency_compact(messages)
+                    messages = await self._compress_context(messages)
                     total_tokens = estimate_tokens(
                         " ".join(m.get("content", "") or "" for m in messages)
                     )
@@ -406,15 +406,15 @@ class AgentEngine:
             f"{tail}"
         )
 
-    def _emergency_compact(self, messages: list[dict]) -> list[dict]:
-        """紧急压缩：保留 system msg + 最近消息，保证 tool_calls/tool 配对不被拆散"""
-        if len(messages) <= 10:
+    async def _compress_context(self, messages: list[dict]) -> list[dict]:
+        """智能上下文压缩：用 LLM 将中间轮次总结为摘要，保留 system + 最近消息"""
+        if len(messages) <= 8:
             return messages
 
         system = [m for m in messages if m["role"] == "system"]
         rest = [m for m in messages if m["role"] != "system"]
 
-        # 从后往前取，确保 tool 消息前面的 assistant(tool_calls) 也一起保留
+        # 保留最近 6 条（保证 tool_calls/tool 配对完整）
         keep = []
         seen_tool = False
         for m in reversed(rest):
@@ -422,11 +422,37 @@ class AgentEngine:
             if m.get("role") == "tool":
                 seen_tool = True
             elif m.get("role") == "assistant" and m.get("tool_calls"):
-                seen_tool = False  # 配对完整
-            if len(keep) >= 12 and not seen_tool:
+                seen_tool = False
+            if len(keep) >= 8 and not seen_tool:
                 break
 
-        return system + keep
+        # 中间部分是需要压缩的
+        to_compress = rest[:-len(keep)] if len(keep) < len(rest) else []
+        if not to_compress:
+            return messages
+
+        # 用 LLM 生成摘要
+        try:
+            compress_prompt = "Summarize the key findings and actions from this conversation history in 2-3 sentences. Focus on what data was found, what tools were used, and what conclusions were reached. Reply in English, be concise:\n\n"
+            for m in to_compress:
+                content = str(m.get("content", ""))[:500]
+                role = m.get("role", "unknown")
+                compress_prompt += f"[{role}] {content}\n"
+
+            summary_resp = await self._call_llm(
+                [{"role": "user", "content": compress_prompt}],
+                None  # 不需要工具
+            )
+            summary = summary_resp.choices[0].message.content.strip()
+        except Exception:
+            summary = "Previous conversation context compressed due to length."
+
+        # 构建新消息列表：system + 摘要 + 最近消息
+        compressed = system + [
+            {"role": "system", "content": f"[Previous context summary]\n{summary}"}
+        ] + keep
+
+        return compressed
 
     async def _wait_for_confirmation(self, task_id: int, step_num: int) -> bool:
         """等待用户确认工具执行，最长 60 秒"""
