@@ -874,10 +874,6 @@ async def compat_agent_stream(req: LegacyAgentRequest):
     agent_mode = req.mode or "react"
     engine = _get_engine(agent_mode)
 
-    # 设置当前用户上下文（供 memory_search 工具使用）
-    from .agent.tools import set_current_user
-    set_current_user(user_id)
-
     async def generate():
         yield f"data: {json.dumps({'type': 'start', 'mode': agent_mode})}\n\n"
 
@@ -887,6 +883,10 @@ async def compat_agent_stream(req: LegacyAgentRequest):
         # 获取用户ID（单用户模式，取第一个用户）
         uid_row = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
         user_id = uid_row["id"] if uid_row else 1
+
+        # 设置当前用户上下文（供 memory_search 工具使用）
+        from .agent.tools import set_current_user
+        set_current_user(user_id)
 
         cur = conn.execute(
             "INSERT INTO agent_tasks (user_id, title, description, status, agent_mode) VALUES (?, ?, ?, 'executing', ?)",
