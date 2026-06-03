@@ -62,7 +62,7 @@ def init_db():
             task_id INTEGER NOT NULL REFERENCES agent_tasks(id) ON DELETE CASCADE,
             step_number INTEGER NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending'
-                CHECK(status IN ('pending','running','completed','failed','skipped')),
+                CHECK(status IN ('pending','running','completed','failed','skipped','confirming','cancelled')),
             step_type TEXT NOT NULL
                 CHECK(step_type IN ('plan','thought','tool_call','observation','response')),
             tool_name TEXT,
