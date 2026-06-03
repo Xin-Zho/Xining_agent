@@ -29,11 +29,7 @@ SUMMARY_PROMPT = """请将以下对话历史总结为一段简洁的文字，保
 """
 
 
-def estimate_tokens(text: str) -> int:
-    """简单 token 估算。中文约 1.5~2 chars/token，英文约 3~4 chars/token。取保守值 3 chars/token"""
-    if not text:
-        return 0
-    return max(1, len(text) // 3)
+from .llm_client import estimate_tokens
 
 
 def count_messages_tokens(messages: list[dict]) -> int:

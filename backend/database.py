@@ -46,7 +46,7 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'pending'
                 CHECK(status IN ('pending','planning','executing','observing','completed','failed','cancelled')),
             agent_mode TEXT NOT NULL DEFAULT 'react'
-                CHECK(agent_mode IN ('react','plan_solve','reflection')),
+                CHECK(agent_mode IN ('react','plan_solve')),
             plan_json TEXT,
             final_answer TEXT,
             conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,

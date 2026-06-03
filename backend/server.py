@@ -1,10 +1,9 @@
 """
 统一 FastAPI 后端 — 融合 agent_learning + codex_test
 
-Agent 引擎（3 种模式）:
+Agent 引擎（2 种模式）:
   - react (DeepSeek ReAct — 增强版 Token 预算 + 并行执行 + 自动反思)
   - plan_solve (先规划再执行)
-  - reflection (执行 → 评审 → 改进)
 
 接口列表 (18 REST + 1 WebSocket):
   POST /api/register              — 注册
@@ -57,8 +56,7 @@ from .auth import (
 from .models import (
     AuthRequest, ChatRequest, CreateConversationRequest, CreateAgentTaskRequest,
 )
-from .agent import AgentEngine, PlanSolveEngine, ReflectionEngine, TOOLS, WebSocketManager
-from .claude_config import load_config, save_config, get_effective_config
+from .agent import AgentEngine, PlanSolveEngine, TOOLS, WebSocketManager
 from .llm_client import LLMClient
 from .context_manager import ContextManager
 from .training import DialogueLogger, RuleExtractor
@@ -100,7 +98,6 @@ _default_engine = AgentEngine(deepseek, TOOLS, ws_manager)
 # 按需创建 DeepSeek 子引擎
 _react_engine = AgentEngine(deepseek, TOOLS, ws_manager) if deepseek else None
 _plan_solve_engine = PlanSolveEngine(deepseek, TOOLS, ws_manager) if deepseek else None
-_reflection_engine = ReflectionEngine(deepseek, TOOLS, ws_manager) if deepseek else None
 
 
 def _get_engine(agent_mode: str):
@@ -109,10 +106,6 @@ def _get_engine(agent_mode: str):
         if _plan_solve_engine is None:
             raise HTTPException(503, "DeepSeek 未配置，plan_solve 模式不可用")
         return _plan_solve_engine
-    elif agent_mode == "reflection":
-        if _reflection_engine is None:
-            raise HTTPException(503, "DeepSeek 未配置，reflection 模式不可用")
-        return _reflection_engine
     elif agent_mode == "react":
         if _react_engine is None:
             raise HTTPException(503, "DeepSeek 未配置，react 模式不可用")
@@ -611,26 +604,6 @@ async def agent_websocket(websocket: WebSocket, task_id: int):
         ws_manager.disconnect(task_id)
 
 
-# ── Claude Code config routes ──────────────────────────────────────────
-
-@app.get("/api/claude-config")
-def get_claude_config(user: dict = Depends(get_current_user)):
-    return get_effective_config()
-
-
-@app.put("/api/claude-config")
-def update_claude_config(body: dict, user: dict = Depends(get_current_user)):
-    allowed_keys = {"model", "allowed_tools", "permission_mode", "append_system_prompt", "extra_dirs"}
-    incoming = {k: v for k, v in body.items() if k in allowed_keys}
-
-    current = load_config()
-    for key, value in incoming.items():
-        setattr(current, key, value)
-    save_config(current)
-
-    return get_effective_config()
-
-
 # ── Logs & Insights routes ──────────────────────────────────────────────
 
 @app.get("/api/logs/stats")
@@ -681,7 +654,6 @@ def agent_modes():
         "available": [
             {"id": "react", "name": "ReAct Agent", "description": "思考→行动→观察循环，Token预算 + 并行执行 + 自动反思"},
             {"id": "plan_solve", "name": "Plan-Solve", "description": "先制定计划，再逐步执行，最后汇总"},
-            {"id": "reflection", "name": "Reflection", "description": "执行 → 自我评审 → 迭代改进"},
         ],
     }
 
@@ -755,7 +727,6 @@ def root():
             "conversations": ["/api/conversations", "/api/conversations/{id}"],
             "agent_tasks": ["/api/agent/tasks", "/api/agent/tasks/{id}"],
             "agent_modes": ["/api/agent/modes"],
-            "claude_config": ["/api/claude-config"],
             "logs": ["/api/logs/stats", "/api/logs/suggestions"],
             "memory": ["/api/memory"],
             "websocket": ["/ws/agent/{task_id}"],
