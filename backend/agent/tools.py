@@ -638,6 +638,42 @@ async def _create_docx(filename: str, markdown_content: str) -> dict:
         return {"error": str(e), "hint": "提供 Markdown 格式的内容，会自动转换为 Word 文档"}
 
 
+# ── PDF 读取工具 ──────────────────────────────────────────────────────────
+
+async def _read_pdf(path: str) -> dict:
+    """用 PyPDF2 解析 PDF 文件，提取文本内容"""
+    from PyPDF2 import PdfReader
+    import io as _io, os as _os
+
+    full_path = _os.path.abspath(_os.path.join(PROJECT_ROOT, path))
+    if not full_path.startswith(PROJECT_ROOT):
+        return {"error": f"安全限制：只能读取项目目录内的文件"}
+    if not _os.path.exists(full_path):
+        return {"error": f"文件不存在：{path}"}
+    if not full_path.lower().endswith('.pdf'):
+        return {"error": f"不是 PDF 文件：{path}"}
+
+    try:
+        with open(full_path, "rb") as f:
+            reader = PdfReader(f)
+            pages = []
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text()
+                if text:
+                    pages.append(f"--- 第{i+1}页 ---\n{text}")
+            if not pages:
+                return {"error": "PDF 中未提取到文字（可能是扫描件或图片型 PDF）"}
+            content = "\n\n".join(pages)
+            return {
+                "path": path,
+                "pages": len(reader.pages),
+                "content": content[:12000],
+                "truncated": len(content) > 12000,
+            }
+    except Exception as e:
+        return {"error": f"PDF 解析失败：{str(e)[:200]}"}
+
+
 # ── 文件生成工具 ──────────────────────────────────────────────────────────
 
 async def _create_document(filename: str, content: str, file_type: str = "md") -> dict:
@@ -790,6 +826,18 @@ TOOLS: list[Tool] = [
         handler=_timer_set,
     ),
     # 代码工具
+    Tool(
+        name="read_pdf",
+        description="解析 PDF 文件，提取所有页面的文本内容。支持多页文档。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "PDF 文件路径，如 'docs/report.pdf'"},
+            },
+            "required": ["path"],
+        },
+        handler=_read_pdf,
+    ),
     Tool(
         name="read_file",
         description="读取文件内容或列出目录。传文件路径返回内容，传目录路径返回文件列表。",
