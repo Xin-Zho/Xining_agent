@@ -674,6 +674,26 @@ async def _read_pdf(path: str) -> dict:
         return {"error": f"PDF 解析失败：{str(e)[:200]}"}
 
 
+# ── 跨会话记忆工具 ──────────────────────────────────────────────────────
+
+async def _memory_search(query: str = "", action: str = "search", key: str = "", value: str = "") -> dict:
+    """搜索/保存/列出长期记忆，跨会话保留。用户偏好、历史结论、项目上下文。"""
+    from ..memory.long_term import LongTermMemory
+    ltm = LongTermMemory(user_id=1)  # 单用户模式
+    if action == "save" and key and value:
+        ltm.save(key, value)
+        return {"action": "save", "key": key, "value": value[:200], "status": "saved"}
+    elif action == "list":
+        memories = ltm.list_all()
+        return {"action": "list", "memories": memories, "count": len(memories)}
+    else:  # search
+        if not query:
+            memories = ltm.list_all()[:5]
+        else:
+            memories = ltm.search(query)[:5]
+        return {"action": "search", "query": query, "memories": memories, "count": len(memories)}
+
+
 # ── 文件生成工具 ──────────────────────────────────────────────────────────
 
 async def _create_document(filename: str, content: str, file_type: str = "md") -> dict:
@@ -716,6 +736,22 @@ async def _create_document(filename: str, content: str, file_type: str = "md") -
 # ── 工具注册表 ──────────────────────────────────────────────────────────
 
 TOOLS: list[Tool] = [
+    # 记忆工具
+    Tool(
+        name="memory_search",
+        description="搜索/保存/列出跨会话长期记忆。action='search'搜索历史(需query) / 'save'保存(key+value) / 'list'列出最近。用于记住用户偏好、历史结论、项目上下文。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "search / save / list"},
+                "query": {"type": "string", "description": "搜索关键词（action=search时必填）"},
+                "key": {"type": "string", "description": "记忆标题（action=save时必填）"},
+                "value": {"type": "string", "description": "记忆内容（action=save时必填）"},
+            },
+            "required": ["action"],
+        },
+        handler=_memory_search,
+    ),
     # Office 文件生成
     Tool(
         name="create_excel",

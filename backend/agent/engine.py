@@ -68,8 +68,16 @@ class AgentEngine:
             "title": task_description[:50],
         })
 
+        # 注入跨会话记忆上下文
+        from ..memory.long_term import LongTermMemory
+        ltm = LongTermMemory(user_id)
+        memory_context = ltm.get_context_for_prompt(max_items=5)
+        system_prompt = AGENT_SYSTEM_PROMPT
+        if memory_context:
+            system_prompt = AGENT_SYSTEM_PROMPT + "\n\n" + memory_context
+
         messages = [
-            {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"请完成以下任务：\n\n{task_description}\n\n先分析任务，然后逐步执行。每个步骤都要记录。最后给出完整的总结。"},
         ]
 
@@ -122,6 +130,17 @@ class AgentEngine:
                 # ── 无工具调用 → 任务完成 ─────────────────
                 if not msg.tool_calls:
                     final_answer = msg.content or "任务已完成。"
+
+                    # 自动保存关键发现到长期记忆
+                    try:
+                        from ..memory.long_term import LongTermMemory
+                        ltm = LongTermMemory(user_id)
+                        # 提取任务关键词作为记忆标题
+                        mem_key = task_description[:50].replace("\n", " ").strip()
+                        mem_value = final_answer[:800]
+                        ltm.save(mem_key, mem_value)
+                    except Exception:
+                        pass  # 记忆保存失败不阻塞
 
                     # 自动反思
                     reflection = await self._reflect(task_description, final_answer)
