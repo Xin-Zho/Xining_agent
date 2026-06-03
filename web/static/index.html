@@ -906,11 +906,11 @@ function updateTokenBar(info,cacheInfo){
 // Changelog
 function showChangelog(){
     const items=[
+        '上下文压缩：LLM 摘要替代暴力截断，长对话不丢信息',
         '会话隔离：每次请求独立 Agent 实例，消除并发串扰',
         '工具权限确认：危险操作执行前弹窗确认，支持允许/拒绝',
         '支持 PDF 文件解析（上传或 read_pdf 工具）',
         'DeepSeek 缓存优化：精简提示词+工具定义内嵌，降低 token 成本',
-        '新增 Excel(.xlsx) 和 Word(.docx) 文件生成工具',
     ];
     document.getElementById('changelogList').innerHTML=items.map(s=>'<li>'+s+'</li>').join('');
     document.getElementById('changelogToast').classList.add('show');
