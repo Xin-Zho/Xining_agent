@@ -396,9 +396,34 @@ body {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Changelog toast */
+.changelog-toast {
+  position: fixed; top: 16px; right: 16px; z-index: 500;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 16px 20px;
+  box-shadow: var(--shadow-lg); max-width: 320px;
+  transform: translateX(120%); opacity: 0;
+  transition: transform 0.35s var(--ease-spring), opacity 0.3s;
+}
+.changelog-toast.show { transform: translateX(0); opacity: 1; }
+.changelog-toast h3 { font-size: var(--text-sm); font-weight: 600; margin-bottom: 8px; color: var(--accent); }
+.changelog-toast ul { font-size: var(--text-xs); color: var(--text-secondary); padding-left: 16px; line-height: 1.8; }
+.changelog-toast li::marker { color: var(--success); content: '✓ '; }
+.changelog-toast .changelog-dismiss {
+  position: absolute; top: 6px; right: 10px; background: none; border: none;
+  font-size: 16px; cursor: pointer; color: var(--text-tertiary);
+}
 </style>
 </head>
 <body>
+
+<!-- 更新日志 -->
+<div class="changelog-toast" id="changelogToast">
+    <button class="changelog-dismiss" onclick="dismissChangelog()">×</button>
+    <h3>🆕 更新日志</h3>
+    <ul id="changelogList"></ul>
+</div>
 
 <!-- ==================== 登录/注册页 ==================== -->
 <div class="auth-page" id="authPage">
@@ -604,6 +629,7 @@ function showAuthPage(){authPage.style.display='flex';chatPage.style.display='no
 function showChatPage(){
     authPage.style.display='none';chatPage.style.display='flex';sidebarUser.textContent=username;
     loadConvs();loadAgents();
+    if(!_changelogShown){showChangelog();_changelogShown=true}
     if(conversations.length===0){conversations.push({id:genId(),title:'',messages:[],updatedAt:Date.now()});saveConvs()}
     const sorted=[...conversations].sort((a,b)=>b.updatedAt-a.updatedAt);currentConvId=sorted[0].id;
     currentAgentId=null;selectAgent(null);
@@ -840,6 +866,25 @@ function updateTokenBar(info,cacheInfo){
     if(info.compressed){label+=' ⚡已压缩';setTimeout(()=>{tokenLabel.textContent=tokenLabel.textContent.replace(' ⚡已压缩','')},3000)}
     tokenLabel.textContent=label;
 }
+
+// Changelog
+function showChangelog(){
+    const items=[
+        '新增 Excel(.xlsx) 和 Word(.docx) 文件生成',
+        '预置 4 个专家智能体：股票分析师/代码助手/文档生成器/深度研究员',
+        'Agent 搜索优化：多角度并行搜索，减少无效思考轮次',
+        '下载文件浏览页 /downloads + 中文文件名 URL 编码修复',
+        '专家模式全面升级，对齐 Agent 模式的优化规则',
+    ];
+    document.getElementById('changelogList').innerHTML=items.map(s=>'<li>'+s+'</li>').join('');
+    document.getElementById('changelogToast').classList.add('show');
+    setTimeout(dismissChangelog,4000);
+}
+function dismissChangelog(){
+    document.getElementById('changelogToast').classList.remove('show');
+}
+// Show changelog after login
+let _changelogShown=false;
 
 // Init
 userToken=localStorage.getItem('auth_token')||'';username=localStorage.getItem('auth_username')||'';
