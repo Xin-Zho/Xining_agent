@@ -676,6 +676,36 @@ async def _read_pdf(path: str) -> dict:
         return {"error": f"PDF 解析失败：{str(e)[:200]}"}
 
 
+# ── 文档管理工具 ──────────────────────────────────────────────────────
+
+async def _list_downloads(user_search: str = "") -> dict:
+    """列出当前用户生成的可下载文件"""
+    from ..database import get_db
+    user_id = _current_user_id.get()
+    conn = get_db()
+    if user_search:
+        rows = conn.execute(
+            "SELECT filename, size_bytes, created_at FROM downloads WHERE user_id = ? AND filename LIKE ? ORDER BY created_at DESC",
+            (user_id, f"%{user_search}%"),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT filename, size_bytes, created_at FROM downloads WHERE user_id = ? ORDER BY created_at DESC",
+            (user_id,),
+        ).fetchall()
+    conn.close()
+    files = [
+        {"name": r["filename"], "size_kb": round(r["size_bytes"]/1024, 1) if r["size_bytes"] else 0,
+         "created": r["created_at"]}
+        for r in rows
+    ]
+    dl_base = "/api/download/"
+    from urllib.parse import quote as _quote
+    for f in files:
+        f["url"] = dl_base + _quote(f["name"], safe='/')
+    return {"files": files, "count": len(files), "user_id": user_id}
+
+
 # ── 跨会话记忆工具 ──────────────────────────────────────────────────────
 
 from contextvars import ContextVar
@@ -759,6 +789,19 @@ async def _create_document(filename: str, content: str, file_type: str = "md") -
 # ── 工具注册表 ──────────────────────────────────────────────────────────
 
 TOOLS: list[Tool] = [
+    # 文档管理
+    Tool(
+        name="list_downloads",
+        description="列出/搜索当前用户生成的所有可下载文件（文档/Excel/报告等）。可选user_search参数搜索文件名。返回文件名、大小、时间、下载链接。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "user_search": {"type": "string", "description": "可选，搜索文件名关键词"},
+            },
+            "required": [],
+        },
+        handler=_list_downloads,
+    ),
     # 记忆工具
     Tool(
         name="memory_search",
