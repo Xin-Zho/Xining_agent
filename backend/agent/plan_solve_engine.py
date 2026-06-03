@@ -13,27 +13,32 @@ from .tools import Tool
 from .websocket_manager import WebSocketManager, _save_step, _update_step, _update_task
 from ..llm_client import estimate_tokens
 
-PLAN_SOLVE_SYSTEM_PROMPT = """你是一个善于规划的执行助手。
+PLAN_SOLVE_SYSTEM_PROMPT = """You are a planning and execution agent. Your job is to break down complex tasks, execute each step with tools, and synthesize a final answer.
 
-## 工作流程
+## Workflow
 
-**第 1 步：输出计划**
-分析任务，列出 2~5 个步骤。格式：
-【计划】
-1. xxx
-2. xxx
+**Phase 1 — PLAN**: Analyze the task. Output 2-5 concrete, actionable steps. Each step must specify WHAT tool to use. Format:
+[PLAN]
+1. Use execute_command('date') to check current time
+2. Use stock_query(action='top') to get ranking data
+3. Use web_search to find related news
+...
 
-**第 2 步：逐步执行**
-每步执行后汇报结果。某步失败则调整计划。
+**Phase 2 — EXECUTE**: Run each step. For each step: call ALL tools for that step in ONE response (parallelize!). If a tool fails, immediately retry with different parameters — do NOT think about it, just retry.
 
-**第 3 步：汇总**
-整合结果给出最终回答。
+**Phase 3 — SYNTHESIZE**: Combine all step results into a final answer with tables, analysis, and sources.
 
-## 规则
-- 步骤 ≤5 个
-- 某步失败不要全放弃
-- 使用可用工具完成任务
-- 请用中文回复"""
+## Rules (MUST follow, in priority order)
+
+1. **CHECK TIME + QUERY TOGETHER.** For time-sensitive tasks, call execute_command('date') AND data tools in the SAME response.
+2. **NEVER GUESS.** Real-time data, file contents, or computation → MUST use tools. Memory-only answers FORBIDDEN.
+3. **BATCH EVERYTHING.** All independent calls in ONE response. Do NOT sequence what can run in parallel.
+4. **SYNTHESIZE.** Never dump raw data. Tables for comparisons, numbered steps for procedures.
+5. **FAIL FAST, RETRY SMARTER.** Empty search → different keywords SAME response. Do NOT think between retries.
+6. **THINK ENGLISH, ANSWER CHINESE.** Internal reasoning in English, final answer in clear Chinese.
+7. **CITE SOURCES.** Append source URLs for all factual data.
+8. **DOCUMENT OUTPUT.** When user wants tables or reports, use create_document and include the download link.
+9. **MINIMIZE STEPS.** Plan ≤5 steps. Merge steps where possible."""
 
 
 class PlanSolveEngine:
@@ -59,35 +64,35 @@ class PlanSolveEngine:
         tool_schemas = [t.to_openai_schema() for t in self.tools]
         step_number = 0
         total_tokens = 0
+        messages = []  # 消息连续性
 
         try:
             # ── 阶段 1：制定计划 ──────────────────────────
             step_number += 1
             _save_step(task_id, step_number, "plan", status="running",
-                       thought="制定执行计划...")
+                       thought="Analyzing task, creating execution plan...")
 
             await self.ws.broadcast(task_id, "step_start", {
                 "step_num": step_number,
                 "type": "plan",
-                "message": "制定执行计划...",
+                "message": "Analyzing task & creating plan...",
             })
 
             plan_messages = [
                 {"role": "system", "content": PLAN_SOLVE_SYSTEM_PROMPT},
-                {"role": "user", "content": f"请为以下任务制定计划（只列步骤，不要执行）：\n\n{task_description}"},
+                {"role": "user", "content": f"Create a plan (list steps only, do NOT execute):\n\n{task_description}"},
             ]
 
             plan_resp = await self._call_llm(plan_messages)
             total_tokens += plan_resp.usage.total_tokens if plan_resp.usage else 0
             plan_text = plan_resp.choices[0].message.content or ""
 
-            # 解析计划步骤
-            steps_match = re.findall(r'步骤\s*[一二三四五1-5]\s*[：:]\s*(.+)', plan_text)
+            steps_match = re.findall(r'(\d+)[\.、)]\s*(.+)', plan_text)
+            steps_match = [s[1] for s in steps_match if len(s[1]) > 5]
             if not steps_match:
-                steps_match = re.findall(r'(\d+)[\.、]\s*(.+)', plan_text)
-                steps_match = [s[1] for s in steps_match]
+                steps_match = re.findall(r'步骤\s*[一二三四五1-5]\s*[：:]\s*(.+)', plan_text)
             if not steps_match:
-                steps_match = [plan_text]
+                steps_match = [plan_text[:200]]
 
             plan = steps_match[:max_steps]
 
@@ -101,9 +106,9 @@ class PlanSolveEngine:
                 "plan": plan,
             })
 
-            # ── 阶段 2：逐步执行 ──────────────────────────
+            # ── 阶段 2：逐步执行（带消息连续性）───────
             results = []
-            context = f"任务：{task_description}\n\n计划：\n" + "\n".join(
+            context = f"Task: {task_description}\n\nPlan:\n" + "\n".join(
                 f"{i}. {s}" for i, s in enumerate(plan, 1)
             )
 
@@ -116,17 +121,18 @@ class PlanSolveEngine:
 
                 step_number += 1
                 _save_step(task_id, step_number, "thought", status="running",
-                           thought=f"执行第{i}步: {step_desc}")
+                           thought=f"Executing step {i}: {step_desc}")
 
                 await self.ws.broadcast(task_id, "step_start", {
                     "step_num": step_number,
                     "type": "thought",
-                    "message": f"执行第{i}步: {step_desc}",
+                    "message": f"Step {i}/{len(plan)}: {step_desc[:100]}",
                 })
 
+                # 构建带历史的步骤消息
                 step_messages = [
                     {"role": "system", "content": PLAN_SOLVE_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"{context}\n\n请执行第 {i} 步：{step_desc}"},
+                    {"role": "user", "content": f"{context}\n\nExecute step {i}: {step_desc}\nBATCH all tool calls for this step in ONE response."},
                 ]
 
                 step_resp = await self._call_llm(step_messages, tool_schemas)
@@ -134,8 +140,9 @@ class PlanSolveEngine:
                 msg = step_resp.choices[0].message
                 step_result = msg.content or ""
 
-                # 如果有工具调用，执行它
+                # 并行执行所有工具调用
                 if msg.tool_calls:
+                    call_tasks = []
                     for tc in msg.tool_calls:
                         tool = self.tool_map.get(tc.function.name)
                         if tool:
@@ -143,12 +150,36 @@ class PlanSolveEngine:
                                 args = json.loads(tc.function.arguments)
                             except json.JSONDecodeError:
                                 args = {}
-                            obs = await tool.handler(**args)
-                            step_messages.append({
-                                "role": "tool",
-                                "tool_call_id": tc.id,
-                                "content": json.dumps(obs, ensure_ascii=False),
-                            })
+                            call_tasks.append((tc, tool, args))
+
+                    # 记录工具调用
+                    step_messages.append({
+                        "role": "assistant",
+                        "content": msg.content or "",
+                        "tool_calls": [
+                            {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                            for tc, _, _ in call_tasks
+                        ]
+                    })
+
+                    # 并行执行
+                    async def exec_one(tc, tool, args):
+                        try:
+                            result = await tool.handler(**args)
+                            return tc.id, result
+                        except Exception as e:
+                            return tc.id, f"Error: {e}"
+
+                    parallel_tasks = [exec_one(tc, tool, args) for tc, tool, args in call_tasks]
+                    completed = await asyncio.gather(*parallel_tasks)
+
+                    for tc_id, obs in completed:
+                        obs_str = json.dumps(obs, ensure_ascii=False) if not isinstance(obs, str) else obs
+                        step_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": obs_str[:4000],
+                        })
 
                     final = await self._call_llm(step_messages)
                     total_tokens += final.usage.total_tokens if final.usage else 0
@@ -170,18 +201,18 @@ class PlanSolveEngine:
             await self.ws.broadcast(task_id, "step_start", {
                 "step_num": step_number,
                 "type": "thought",
-                "message": "汇总最终结果...",
+                "message": "Synthesizing final answer...",
             })
 
             summary_messages = [
-                {"role": "system", "content": "你是一个善于总结的助手。"},
-                {"role": "user", "content": f"任务：{task_description}\n\n各步骤结果：\n" +
-                    "\n".join(f"步骤 {r['step']}: {r['result'][:500]}" for r in results) +
-                    "\n\n请汇总成最终回答。"},
+                {"role": "system", "content": "You are a synthesis expert. Combine all step results into a polished final answer. Use tables for data. Include sources. Speak Chinese."},
+                {"role": "user", "content": f"Task: {task_description}\n\nStep Results:\n" +
+                    "\n".join(f"Step {r['step']}: {r['result'][:500]}" for r in results) +
+                    "\n\nSynthesize a comprehensive final answer with tables, analysis, and sources."},
             ]
             summary_resp = await self._call_llm(summary_messages)
             total_tokens += summary_resp.usage.total_tokens if summary_resp.usage else 0
-            final_answer = summary_resp.choices[0].message.content or "任务已完成。"
+            final_answer = summary_resp.choices[0].message.content or "Task completed."
 
             duration_ms = int((time.time() - start_time) * 1000)
             _update_task(task_id, status="completed", final_answer=final_answer,
