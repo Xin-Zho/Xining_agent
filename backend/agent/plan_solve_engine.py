@@ -13,7 +13,11 @@ from .tools import Tool
 from .websocket_manager import WebSocketManager, _save_step, _update_step, _update_task
 from ..llm_client import estimate_tokens
 
-PLAN_SOLVE_SYSTEM_PROMPT = """You are a planning+execution agent. Plan→Execute→Synthesize in ≤5 steps. Think English, answer Chinese. Never guess—use tools. Batch calls, fail fast, cite sources. Use create_document for reports/tables. Output with Markdown tables and source URLs."""
+PLAN_SOLVE_SYSTEM_PROMPT = """You are a planning+execution agent.
+
+CRITICAL: For simple questions (greetings, basic knowledge, single calculations), answer DIRECTLY — no planning needed. Only use Plan→Execute→Synthesize for COMPLEX tasks that need multiple steps.
+
+When task IS complex: Plan in ≤3 steps. Execute each step with batched tool calls. Synthesize with tables and sources. Think English, answer Chinese. Never guess."""
 
 
 class PlanSolveEngine:
@@ -42,6 +46,58 @@ class PlanSolveEngine:
         messages = []  # 消息连续性
 
         try:
+            # ── 阶段 0：复杂度判断 ──────────────────────────
+            # 简单问题直接回答，不需要规划
+            check_messages = [
+                {"role": "system", "content": "Is this task complex (requires multiple steps/tools)? Answer ONLY 'simple' or 'complex'."},
+                {"role": "user", "content": task_description},
+            ]
+            check_resp = await self._call_llm(check_messages, None)
+            complexity = (check_resp.choices[0].message.content or "").strip().lower()
+
+            if "simple" in complexity:
+                # 简单问题，直接调用 Agent 逻辑
+                step_number += 1
+                _save_step(task_id, step_number, "thought", status="running",
+                           thought="Simple question, answering directly...")
+                direct_messages = [
+                    {"role": "system", "content": "Answer concisely in Chinese. Think English but respond in Chinese. Use tools if needed. Never guess."},
+                    {"role": "user", "content": task_description},
+                ]
+                direct_resp = await self._call_llm(direct_messages, tool_schemas)
+                total_tokens += direct_resp.usage.total_tokens if direct_resp.usage else 0
+                msg = direct_resp.choices[0].message
+                final_answer = msg.content or ""
+
+                # 如果有工具调用，执行它
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        tool = self.tool_map.get(tc.function.name)
+                        if tool:
+                            try:
+                                args = json.loads(tc.function.arguments)
+                            except json.JSONDecodeError:
+                                args = {}
+                            obs = await tool.handler(**args)
+                            obs_str = json.dumps(obs, ensure_ascii=False)[:4000]
+                            direct_messages.append({"role": "assistant", "content": msg.content or "",
+                                "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}]})
+                            direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": obs_str})
+                    final_resp = await self._call_llm(direct_messages, None)
+                    total_tokens += final_resp.usage.total_tokens if final_resp.usage else 0
+                    final_answer = final_resp.choices[0].message.content or final_answer
+
+                _update_step(task_id, step_number, "completed", duration_ms=0)
+
+                duration_ms = int((time.time() - start_time) * 1000)
+                _update_task(task_id, status="completed", final_answer=final_answer,
+                             total_tokens=total_tokens, duration_ms=duration_ms)
+                await self.ws.broadcast(task_id, "task_complete", {
+                    "final_answer": final_answer, "total_steps": step_number,
+                    "total_tokens": total_tokens, "duration_ms": duration_ms,
+                })
+                return
+
             # ── 阶段 1：制定计划 ──────────────────────────
             step_number += 1
             _save_step(task_id, step_number, "plan", status="running",
