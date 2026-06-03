@@ -33,7 +33,9 @@ AGENT_SYSTEM_PROMPT = """You are an autonomous AI agent with tools. You MUST use
 
 | Tool | Purpose | Example |
 |------|---------|---------|
-| create_document | Generate downloadable file (table/CSV/report/HTML) | create_document(filename='report.md', content='# Report\n...') |
+| create_excel | Generate .xlsx Excel with headers, styles, auto-width | create_excel(filename='data.xlsx', data_json='{"headers":["Name"],"rows":[["A"]]}') |
+| create_docx | Generate .docx Word doc from Markdown (headings/tables/lists/quotes) | create_docx(filename='report.docx', markdown_content='# Title\n## Section\n|A|B|\n|---|---|\n|1|2|') |
+| create_document | Generate .md/.csv/.html/.txt file | create_document(filename='data.csv', content='a,b,c\n1,2,3') |
 | execute_command | Run shell: date, ls, cat, git, python, etc. | execute_command(command='date') |
 | stock_query | Real-time A-share stock rankings (top/down/volume) | stock_query(action='top', market='a') |
 | web_search | Web search with auto time-filter for recent results | web_search(query='latest interest rate', fresh='d') |

@@ -481,6 +481,163 @@ async def _stock_query(action: str = "top", market: str = "a", count: int = 10) 
         return {"error": str(e), "action": action, "hint": "新浪接口可能暂时不可用，建议用 web_search 搜索股票行情替代"}
 
 
+# ── Excel / Word 生成工具 ────────────────────────────────────────────────
+
+async def _create_excel(filename: str, data_json: str) -> dict:
+    """生成真正的 .xlsx Excel 文件（支持多 Sheet、表头、自动列宽）"""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    import json as _json
+    import os as _os
+
+    downloads_dir = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+        "web", "static", "downloads"
+    )
+    _os.makedirs(downloads_dir, exist_ok=True)
+
+    safe_name = "".join(c for c in filename if c.isalnum() or c in "._- ()[]")
+    if not safe_name.endswith('.xlsx'):
+        safe_name += '.xlsx'
+    filepath = _os.path.join(downloads_dir, safe_name)
+
+    try:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+
+        # 解析 JSON 数据
+        data = _json.loads(data_json)
+        sheets_data = data if isinstance(data, list) else [{"title": data.get("title", "Sheet1"), "headers": data.get("headers", []), "rows": data.get("rows", [])}]
+
+        header_font = Font(bold=True, color="FFFFFF", size=12)
+        header_fill = PatternFill(start_color="5B6AF0", end_color="5B6AF0", fill_type="solid")
+        thin_border = Border(
+            left=Side(style='thin'), right=Side(style='thin'),
+            top=Side(style='thin'), bottom=Side(style='thin')
+        )
+
+        for idx, sheet_data in enumerate(sheets_data):
+            if idx > 0:
+                ws = wb.create_sheet(title=sheet_data.get("title", f"Sheet{idx+1}"))
+            else:
+                ws.title = sheet_data.get("title", "Sheet1")
+
+            # 写表头
+            headers = sheet_data.get("headers", [])
+            for col, h in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=h)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = Alignment(horizontal='center')
+                cell.border = thin_border
+
+            # 写数据行
+            for row_idx, row in enumerate(sheet_data.get("rows", []), 2):
+                for col_idx, val in enumerate(row, 1):
+                    cell = ws.cell(row=row_idx, column=col_idx, value=val)
+                    cell.border = thin_border
+                    cell.alignment = Alignment(vertical='center')
+
+            # 自动列宽
+            for col in ws.columns:
+                max_len = 0
+                for cell in col:
+                    if cell.value:
+                        max_len = max(max_len, len(str(cell.value)))
+                ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
+
+        wb.save(filepath)
+        wb.close()
+
+        from urllib.parse import quote as _quote
+        encoded_url = "/static/downloads/" + _quote(safe_name, safe='/')
+        return {
+            "filename": safe_name, "file_type": "xlsx",
+            "size_bytes": _os.path.getsize(filepath),
+            "download_url": encoded_url,
+            "clickable_link": f"[📥 下载 {safe_name}]({encoded_url})",
+        }
+    except Exception as e:
+        return {"error": str(e), "hint": "data_json 格式: {\"headers\":[\"列1\",\"列2\"],\"rows\":[[\"a\",1],[\"b\",2]]} 或数组形式"}
+
+
+async def _create_docx(filename: str, markdown_content: str) -> dict:
+    """生成 .docx Word 文档（从 Markdown 转换）"""
+    from docx import Document
+    from docx.shared import Pt, Inches, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    import os as _os, re as _re
+
+    downloads_dir = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
+        "web", "static", "downloads"
+    )
+    _os.makedirs(downloads_dir, exist_ok=True)
+
+    safe_name = "".join(c for c in filename if c.isalnum() or c in "._- ()[]")
+    if not safe_name.endswith('.docx'):
+        safe_name += '.docx'
+    filepath = _os.path.join(downloads_dir, safe_name)
+
+    try:
+        doc = Document()
+
+        # 解析 Markdown → Word 段落
+        for line in markdown_content.split('\n'):
+            line = line.strip()
+            if not line:
+                doc.add_paragraph()
+                continue
+
+            if line.startswith('# ') or line.startswith('## ') or line.startswith('### '):
+                level = line.count('#')
+                heading = doc.add_heading(line.lstrip('# ').strip(), level=min(level, 3))
+            elif line.startswith('|') and '|' in line[1:]:
+                # 跳过表格分隔行
+                if _re.match(r'\|[\s\-:|]+\|', line):
+                    continue
+                cells = [c.strip() for c in line.split('|')[1:-1]]
+                if not hasattr(_create_docx, '_table'):
+                    _create_docx._table = doc.add_table(rows=0, cols=len(cells))
+                    _create_docx._table.style = 'Light Shading Accent 1'
+                row = _create_docx._table.add_row()
+                for i, cell_text in enumerate(cells):
+                    row.cells[i].text = cell_text
+            elif line.startswith('- ') or line.startswith('* '):
+                doc.add_paragraph(line[2:], style='List Bullet')
+            elif _re.match(r'^\d+[\.、]', line):
+                doc.add_paragraph(_re.sub(r'^\d+[\.、]\s*', '', line), style='List Number')
+            elif line.startswith('> '):
+                p = doc.add_paragraph(line[2:])
+                p.style = 'Intense Quote'
+            elif line.startswith('---'):
+                doc.add_paragraph('─' * 40)
+            else:
+                p = doc.add_paragraph(line)
+                # 解析行内 Markdown: **bold**, *italic*, [link](url)
+                for run in p.runs:
+                    if _re.search(r'\*\*(.+?)\*\*', run.text):
+                        run.bold = True
+                        run.text = _re.sub(r'\*\*(.+?)\*\*', r'\1', run.text)
+
+        # 清除表格状态
+        if hasattr(_create_docx, '_table'):
+            del _create_docx._table
+
+        doc.save(filepath)
+
+        from urllib.parse import quote as _quote
+        encoded_url = "/static/downloads/" + _quote(safe_name, safe='/')
+        return {
+            "filename": safe_name, "file_type": "docx",
+            "size_bytes": _os.path.getsize(filepath),
+            "download_url": encoded_url,
+            "clickable_link": f"[📥 下载 {safe_name}]({encoded_url})",
+        }
+    except Exception as e:
+        return {"error": str(e), "hint": "提供 Markdown 格式的内容，会自动转换为 Word 文档"}
+
+
 # ── 文件生成工具 ──────────────────────────────────────────────────────────
 
 async def _create_document(filename: str, content: str, file_type: str = "md") -> dict:
@@ -523,7 +680,34 @@ async def _create_document(filename: str, content: str, file_type: str = "md") -
 # ── 工具注册表 ──────────────────────────────────────────────────────────
 
 TOOLS: list[Tool] = [
-    # 文件生成工具
+    # Office 文件生成
+    Tool(
+        name="create_excel",
+        description="生成真正的 .xlsx Excel 文件（可多Sheet、带表头样式、自动列宽）。适合报表、数据导出、表格。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "文件名，如 'stock_report.xlsx'"},
+                "data_json": {"type": "string", "description": "JSON数据: {\"headers\":[\"列1\",\"列2\"],\"rows\":[[\"a\",1],[\"b\",2]]} 或 [{\"title\":\"Sheet名\",\"headers\":[...],\"rows\":[...]}]"},
+            },
+            "required": ["filename", "data_json"],
+        },
+        handler=_create_excel,
+    ),
+    Tool(
+        name="create_docx",
+        description="生成 .docx Word 文档。传入 Markdown 格式内容，自动转换为标题/表格/列表/引用。适合报告、方案、说明书。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "文件名，如 'report.docx'"},
+                "markdown_content": {"type": "string", "description": "Markdown 格式的文档内容（支持 #标题/|表格|/列表/**加粗**）"},
+            },
+            "required": ["filename", "markdown_content"],
+        },
+        handler=_create_docx,
+    ),
+    # 通用文件生成
     Tool(
         name="create_document",
         description="创建可下载文件（Markdown表格、CSV、HTML、Python脚本等）。生成后返回下载链接给用户。适合做报表、数据汇总、文档。",
