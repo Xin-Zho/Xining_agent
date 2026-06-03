@@ -288,6 +288,23 @@ body {
   transition: all var(--dur-fast);
 }
 .input-row .btn-attach:hover { background: var(--slate-2); border-color: var(--slate-4); }
+/* Mic button */
+.input-row .btn-mic {
+  background: var(--slate-1); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 9px; cursor: pointer; font-size: 15px; flex-shrink: 0;
+  color: var(--text-secondary); min-height: var(--touch-min); min-width: var(--touch-min);
+  display: flex; align-items: center; justify-content: center;
+  transition: all var(--dur-fast);
+}
+.input-row .btn-mic:hover { background: var(--slate-2); border-color: var(--slate-4); }
+.input-row .btn-mic.recording {
+  background: var(--danger); color: #fff; border-color: var(--danger);
+  animation: micPulse 1.5s ease-in-out infinite;
+}
+@keyframes micPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); }
+  50% { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
+}
 .input-row textarea {
   flex: 1; min-height: var(--touch-min); padding: 9px 12px;
   font-size: var(--text-base); font-family: var(--font-sans); color: var(--text-primary);
@@ -493,8 +510,9 @@ body {
             <div class="attach-tags" id="attachTags"></div>
             <div class="input-row">
                 <button class="btn-attach interactive" onclick="document.getElementById('fileInput').click()" title="上传文件">📎</button>
+                <button class="btn-mic interactive" id="micBtn" onclick="toggleMic()" title="语音输入" aria-label="语音输入">🎤</button>
                 <input type="file" id="fileInput" style="display:none" onchange="handleFileSelect(this.files)" multiple accept="image/*,.txt,.md,.py,.json,.csv,.pdf">
-                <textarea id="userInput" rows="1" placeholder="输入消息…" onkeydown="handleKeyDown(event)"></textarea>
+                <textarea id="userInput" rows="1" placeholder="输入消息或点击🎤语音…" onkeydown="handleKeyDown(event)"></textarea>
                 <button class="btn-send interactive" id="sendBtn" onclick="sendMessage()">发送</button>
             </div>
         </div>
@@ -717,6 +735,61 @@ function renderAttachTags(){
 }
 messagesDiv.addEventListener('dragover',e=>e.preventDefault());
 messagesDiv.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.files.length>0)handleFileSelect(e.dataTransfer.files)});
+
+// Speech recognition
+const SpeechRecognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+let recognition=null,isRecording=false;
+
+function initRecognition(){
+    if(!SpeechRecognition){return null}
+    const r=new SpeechRecognition();
+    r.continuous=false; r.interimResults=true;
+    r.lang='zh-CN'; r.maxAlternatives=1;
+    return r;
+}
+
+function toggleMic(){
+    if(!SpeechRecognition){alert('您的浏览器不支持语音识别，请使用 Chrome 或 Edge');return}
+    if(isRecording){stopMic();return}
+    startMic();
+}
+
+function startMic(){
+    if(!recognition){recognition=initRecognition()}
+    if(!recognition)return;
+
+    recognition.onresult=e=>{
+        let final='',interim='';
+        for(let i=e.resultIndex;i<e.results.length;i++){
+            const t=e.results[i][0].transcript;
+            if(e.results[i].isFinal){final+=t}else{interim+=t}
+        }
+        userInput.value=(final||interim).trim();
+        userInput.style.height='auto';userInput.style.height=Math.min(userInput.scrollHeight,120)+'px';
+    };
+    recognition.onerror=e=>{
+        if(e.error==='no-speech'){/* silent */}
+        else if(e.error==='aborted'){/* user stopped */}
+        else{alert('语音识别失败：'+({ 'audio-capture':'无法访问麦克风','network':'网络连接失败，请检查网络','not-allowed':'麦克风权限被拒绝，请在浏览器设置中允许','service-not-allowed':'语音服务不可用','language-not-supported':'不支持的语言'}[e.error]||e.error))}
+        stopMic();
+    };
+    recognition.onend=()=>{if(isRecording&&recognition){try{recognition.start()}catch(e){stopMic()}}};
+    try{
+        recognition.start();
+        isRecording=true;
+        const btn=document.getElementById('micBtn');
+        btn.textContent='⏹';btn.classList.add('recording');
+        btn.title='停止录音';
+    }catch(e){alert('无法启动麦克风：'+e.message)}
+}
+
+function stopMic(){
+    if(recognition){try{recognition.stop()}catch(e){}}
+    isRecording=false;
+    const btn=document.getElementById('micBtn');
+    btn.textContent='🎤';btn.classList.remove('recording');
+    btn.title='语音输入';
+}
 
 // Send message
 async function sendMessage(){
