@@ -508,13 +508,15 @@ async def _create_document(filename: str, content: str, file_type: str = "md") -
         return {"error": str(e), "filename": safe_name}
 
     download_url = f"/static/downloads/{safe_name}"
-    # 生成完整可点击链接
+    # URL-encode Chinese characters in the filename
+    from urllib.parse import quote as _quote
+    encoded_url = "/static/downloads/" + _quote(safe_name, safe='/')
     return {
         "filename": safe_name,
         "file_type": file_type,
         "size_bytes": _os.path.getsize(filepath),
-        "download_url": download_url,
-        "clickable_link": f"[📥 下载 {safe_name}]({download_url})",
+        "download_url": encoded_url,
+        "clickable_link": f"[📥 下载 {safe_name}]({encoded_url})",
     }
 
 
