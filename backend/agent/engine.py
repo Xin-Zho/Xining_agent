@@ -200,11 +200,37 @@ class AgentEngine:
                     except Exception as e:
                         return tc.id, {"error": f"工具执行失败：{e}", "tool_name": tool_name}
 
-                # 记录工具调用步骤
+                # 记录工具调用步骤（需要确认的工具先请求用户确认）
                 for i, (tc, tool_name, arguments) in enumerate(call_tasks):
                     if arguments.get("__blocked__"):
                         continue
                     sn = step_number + 1 + i
+                    tool = self.tool_map.get(tool_name)
+
+                    # 检查是否需要用户确认
+                    if tool and getattr(tool, 'require_confirmation', False):
+                        _save_step(task_id, sn, "tool_call", status="confirming",
+                                   tool_name=tool_name, tool_args=arguments)
+                        await self.ws.broadcast(task_id, "confirmation_required", {
+                            "step_num": sn,
+                            "tool_name": tool_name,
+                            "args": arguments,
+                        })
+                        # 等用户确认（最多 60 秒）
+                        confirmed = await self._wait_for_confirmation(task_id, sn)
+                        if not confirmed:
+                            arguments = {"__blocked__": True, "__reason__": "用户取消了此操作"}
+                            _update_step(task_id, sn, "skipped",
+                                         tool_result={"msg": "用户取消执行"}, duration_ms=0)
+                            await self.ws.broadcast(task_id, "step_complete", {
+                                "step_num": sn, "type": "tool_call",
+                                "tool_name": tool_name, "result": "⛔ 已取消",
+                            })
+                            continue
+                        else:
+                            _update_step(task_id, sn, "running",
+                                         tool_args=arguments)
+
                     _save_step(task_id, sn, "tool_call", status="running",
                                tool_name=tool_name, tool_args=arguments)
                     await self.ws.broadcast(task_id, "step_start", {
@@ -401,6 +427,16 @@ class AgentEngine:
                 break
 
         return system + keep
+
+    async def _wait_for_confirmation(self, task_id: int, step_num: int) -> bool:
+        """等待用户确认工具执行，最长 60 秒"""
+        key = f"{task_id}_{step_num}"
+        for _ in range(120):  # 60 秒，每 0.5 秒检查
+            confirm = self.ws.confirmations.pop(key, None)
+            if confirm is not None:
+                return confirm.get("approved", False)
+            await asyncio.sleep(0.5)
+        return False  # 超时默认拒绝
 
     async def cancel(self, task_id: int):
         self._cancellations.add(task_id)

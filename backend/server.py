@@ -565,6 +565,18 @@ def delete_agent_task(task_id: int, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+# ── Tool confirmation ───────────────────────────────────────────────────
+
+@app.post("/api/agent/confirm/{task_id}")
+def confirm_tool(task_id: int, body: dict):
+    """确认或拒绝工具执行"""
+    step = body.get("step_number")
+    approved = body.get("approved", False)
+    key = f"{task_id}_{step}"
+    ws_manager.confirmations[key] = {"approved": approved}
+    return {"ok": True, "task_id": task_id, "step": step, "approved": approved}
+
+
 # ── WebSocket ───────────────────────────────────────────────────────────
 
 @app.websocket("/ws/agent/{task_id}")
@@ -902,6 +914,24 @@ async def compat_agent_stream(req: LegacyAgentRequest):
                 conn.close()
                 for s in steps:
                     last_step = s["step_number"]
+
+                    # 检测需要确认的步骤
+                    if s["status"] == "confirming":
+                        yield f"data: {json.dumps({'type': 'confirmation_required', 'task_id': task_id, 'step_num': s['step_number'], 'tool_name': s['tool_name'], 'args': s['tool_args']})}\n\n"
+                        # 等待用户确认（轮询 confirmations dict）
+                        key = f"{task_id}_{s['step_number']}"
+                        waited = 0
+                        while key not in ws_manager.confirmations and waited < 120:
+                            await asyncio.sleep(0.5)
+                            waited += 1
+                            if bg_task.done():
+                                break
+                        confirm = ws_manager.confirmations.pop(key, None)
+                        if confirm and confirm.get("approved"):
+                            yield f"data: {json.dumps({'type': 'step', 'step': {'turn': s['step_number'], 'type': 'tool_call', 'tool_name': s['tool_name'], 'thought': None, 'observation': '✅ 已允许执行'}})}\n\n"
+                        else:
+                            yield f"data: {json.dumps({'type': 'step', 'step': {'turn': s['step_number'], 'type': 'tool_call', 'tool_name': s['tool_name'], 'thought': None, 'observation': '⛔ 已取消'}})}\n\n"
+                        continue
 
                     # 解析 tool_result 为可读文本
                     obs_text = ""

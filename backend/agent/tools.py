@@ -861,6 +861,7 @@ TOOLS: list[Tool] = [
             "required": ["command"],
         },
         handler=_execute_command,
+        require_confirmation=True,
     ),
     Tool(
         name="grep_files",
