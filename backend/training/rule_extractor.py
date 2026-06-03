@@ -1,11 +1,11 @@
 """
-规则提取器 — 从 Claude 对话日志中提取 Prompt 优化建议
+规则提取器 — 从 Agent 对话日志中提取 Prompt 优化建议
 
 分析维度：
-  1. 工具选择模式 — Claude 面对不同类型问题选什么工具
-  2. 回答结构 — Claude 如何组织回答
-  3. 失败恢复 — Claude 如何从错误中恢复
-  4. Token 效率 — Claude 如何保持简洁
+  1. 工具选择模式 — Agent 面对不同类型问题选什么工具
+  2. 回答结构 — Agent 如何组织回答
+  3. 失败恢复 — Agent 如何从错误中恢复
+  4. Token 效率 — Agent 如何保持简洁
 
 输出：可直接用于 Prompt 优化的规则列表
 """
@@ -16,12 +16,12 @@ class RuleExtractor:
     """从对话日志中提取可复用的规则"""
 
     def __init__(self, logs: list[dict]):
-        self.logs = [l for l in logs if l.get("source") == "claude"]
+        self.logs = [l for l in logs if l.get("source") in ("agent", "chat")]
 
     def extract_tool_usage_patterns(self) -> dict:
-        """分析 Claude 的工具使用模式"""
+        """分析 Agent 的工具使用模式"""
         if not self.logs:
-            return {"patterns": [], "recommendations": ["暂无 Claude 日志，多通过 Claude 管道对话后会自动分析。"]}
+            return {"patterns": [], "recommendations": ["暂无日志，多通过 Agent 对话后会自动分析。"]}
 
         tool_counter = Counter()
         question_words = Counter()
@@ -71,7 +71,7 @@ class RuleExtractor:
 
         recommendations = []
         if avg_len > 2000:
-            recommendations.append(f"Claude 平均回答 {avg_len} 字符，较长。检查你的 Agent 回答是否过于冗长。")
+            recommendations.append(f"Agent 平均回答 {avg_len} 字符，较长。检查你的 Agent 回答是否过于冗长。")
         if code_pct > 50:
             recommendations.append(f"{code_pct:.0f}% 的回答包含代码块，在 Agent Prompt 中强调代码示例格式。")
 
@@ -99,7 +99,7 @@ class RuleExtractor:
         recommendations = []
         if recovery_patterns:
             recommendations.append(
-                f"在 {len(recovery_patterns)} 个案例中，Claude 遇到错误后通过多步尝试恢复。"
+                f"在 {len(recovery_patterns)} 个案例中，Agent 遇到错误后通过多步尝试恢复。"
                 f"在 Agent Prompt 中强调'工具失败后换策略，不要重复失败调用'。"
             )
         else:
@@ -115,7 +115,7 @@ class RuleExtractor:
 
         lines = [
             "# Prompt 优化建议",
-            f"分析时间：{len(self.logs)} 条 Claude 对话记录",
+            f"分析时间：{len(self.logs)} 条 Agent 对话记录",
             "",
             "## 工具使用",
             *[f"- {r}" for r in tool["recommendations"]],
@@ -129,7 +129,7 @@ class RuleExtractor:
             "## 下一步",
             "1. 根据以上建议修改 backend/agent/engine.py 中的 AGENT_SYSTEM_PROMPT",
             "2. 用相同问题测试 Agent，对比回答质量",
-            "3. 继续通过 Claude 管道对话积累更多日志",
+            "3. 继续通过 Agent 管道对话积累更多日志",
         ]
 
         return "\n".join(lines)

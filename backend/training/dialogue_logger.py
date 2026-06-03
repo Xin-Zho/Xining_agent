@@ -70,20 +70,20 @@ class DialogueLogger:
                 continue
         return logs
 
-    def get_claude_logs(self, days: int = 7) -> list[dict]:
-        """只取 Claude 来源的日志"""
+    def get_agent_logs(self, days: int = 7) -> list[dict]:
+        """取 Agent 来源的日志"""
         all_logs = self.get_recent_logs(days)
-        return [l for l in all_logs if l.get("source") == "claude"]
+        return [l for l in all_logs if l.get("source") == "agent"]
 
     def stats(self) -> dict:
         """日志统计概览"""
         logs = self.get_recent_logs(7)
-        claude_logs = [l for l in logs if l.get("source") == "claude"]
         agent_logs = [l for l in logs if l.get("source") == "agent"]
+        chat_logs = [l for l in logs if l.get("source") == "chat"]
         return {
             "total": len(logs),
-            "claude": len(claude_logs),
             "agent": len(agent_logs),
-            "avg_claude_tokens": sum(l.get("tokens", 0) for l in claude_logs) // max(len(claude_logs), 1),
+            "chat": len(chat_logs),
             "avg_agent_tokens": sum(l.get("tokens", 0) for l in agent_logs) // max(len(agent_logs), 1),
+            "avg_chat_tokens": sum(l.get("tokens", 0) for l in chat_logs) // max(len(chat_logs), 1),
         }

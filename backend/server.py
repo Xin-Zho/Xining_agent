@@ -616,7 +616,7 @@ def logs_stats(user: dict = Depends(get_current_user)):
 
 @app.get("/api/logs/suggestions")
 def logs_suggestions(user: dict = Depends(get_current_user)):
-    logs = dialogue_logger.get_claude_logs(days=30)
+    logs = dialogue_logger.get_agent_logs(days=30)
     extractor = RuleExtractor(logs)
     suggestions = extractor.generate_prompt_suggestions()
     return {"ok": True, "total_logs": len(logs), "suggestions": suggestions}
