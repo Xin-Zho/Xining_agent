@@ -676,10 +676,16 @@ async def _read_pdf(path: str) -> dict:
 
 # ── 跨会话记忆工具 ──────────────────────────────────────────────────────
 
+from contextvars import ContextVar
+_current_user_id: ContextVar[int] = ContextVar('current_user_id', default=1)
+
+def set_current_user(user_id: int):
+    _current_user_id.set(user_id)
+
 async def _memory_search(query: str = "", action: str = "search", key: str = "", value: str = "") -> dict:
     """搜索/保存/列出长期记忆，跨会话保留。用户偏好、历史结论、项目上下文。"""
     from ..memory.long_term import LongTermMemory
-    ltm = LongTermMemory(user_id=1)  # 单用户模式
+    ltm = LongTermMemory(user_id=_current_user_id.get())
     if action == "save" and key and value:
         ltm.save(key, value)
         return {"action": "save", "key": key, "value": value[:200], "status": "saved"}

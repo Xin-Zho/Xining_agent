@@ -65,7 +65,7 @@ from .memory import LongTermMemory
 # ── Config ──────────────────────────────────────────────────────────────
 
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "true").strip().lower() == "true"
+ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "false").strip().lower() != "false"
 MAX_HISTORY_ROUNDS = 20
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -867,6 +867,10 @@ async def compat_agent_stream(req: LegacyAgentRequest):
 
     agent_mode = req.mode or "react"
     engine = _get_engine(agent_mode)
+
+    # 设置当前用户上下文（供 memory_search 工具使用）
+    from .agent.tools import set_current_user
+    set_current_user(user_id)
 
     async def generate():
         yield f"data: {json.dumps({'type': 'start', 'mode': agent_mode})}\n\n"
