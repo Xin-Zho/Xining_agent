@@ -402,12 +402,26 @@ class AgentEngine:
         )
 
     def _emergency_compact(self, messages: list[dict]) -> list[dict]:
-        """紧急压缩：保留 system + 最近 6 条，丢弃中间"""
-        if len(messages) <= 7:
+        """紧急压缩：保留 system msg + 最近消息，保证 tool_calls/tool 配对不被拆散"""
+        if len(messages) <= 10:
             return messages
+
         system = [m for m in messages if m["role"] == "system"]
         rest = [m for m in messages if m["role"] != "system"]
-        return system + rest[-6:]
+
+        # 从后往前取，确保 tool 消息前面的 assistant(tool_calls) 也一起保留
+        keep = []
+        seen_tool = False
+        for m in reversed(rest):
+            keep.insert(0, m)
+            if m.get("role") == "tool":
+                seen_tool = True
+            elif m.get("role") == "assistant" and m.get("tool_calls"):
+                seen_tool = False  # 配对完整
+            if len(keep) >= 12 and not seen_tool:
+                break
+
+        return system + keep
 
     async def cancel(self, task_id: int):
         self._cancellations.add(task_id)
