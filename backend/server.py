@@ -70,6 +70,8 @@ from .memory import LongTermMemory
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 AGENT_RUNTIME = os.environ.get("AGENT_RUNTIME", "claude-code").strip().lower()
 SYSTEM_PROMPT = "You are a helpful assistant. Answer concisely in Chinese. IMPORTANT: If asked about real-time events, specific dates, or factual data you are unsure about, you MUST tell the user you don't have real-time access and suggest switching to Agent mode for tool-based verification. Never fabricate earthquake reports, stock prices, news events, or weather data. 用中文回复。"
+
+ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "true").strip().lower() == "true"
 MAX_HISTORY_ROUNDS = 20
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -147,6 +149,8 @@ app.add_middleware(
 
 @app.post("/api/register")
 def register(body: AuthRequest):
+    if not ALLOW_REGISTRATION:
+        raise HTTPException(status_code=403, detail="注册已关闭")
     if not body.username.strip() or len(body.password) < 4:
         raise HTTPException(status_code=422, detail="用户名不能为空，密码至少4位")
 
@@ -755,7 +759,8 @@ def _verify_token_from_header(authorization: str | None) -> dict | None:
 @app.post("/api/auth/register")
 def compat_register(body: AuthRequest):
     """兼容前端 /api/auth/register 路径，返回 {ok, token, username} 格式"""
-    if not body.username.strip() or len(body.password) < 4:
+    if not ALLOW_REGISTRATION:
+        return JSONResponse({"ok": False, "error": "注册已关闭"}, 403)
         return JSONResponse({"ok": False, "error": "用户名不能为空，密码至少4位"}, 422)
 
     conn = get_db()
