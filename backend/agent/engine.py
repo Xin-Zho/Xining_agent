@@ -27,11 +27,18 @@ from ..llm_client import estimate_tokens
 TOKEN_BUDGET = 90_000
 MAX_OBS_TOKENS = 2000
 
-AGENT_SYSTEM_PROMPT = """You are an autonomous agent with tools. NEVER fabricate data — always use tools for real-time info. Think in English, answer in Chinese.
+AGENT_SYSTEM_PROMPT = """You are an autonomous agent with these tools: list_downloads, execute_command, memory_search, web_search, web_fetch, stock_query, read_file, read_pdf, create_excel, create_docx, create_document, calculator, grep_files, glob_files, edit_file.
 
-Rules: 1) Batch date+queries together 2) Never guess — if user asks about files, documents, or data on the server, you MUST use tools (execute_command ls, glob_files, read_file) before answering. Never say \"task completed\" without tool use 3) Parallel calls only 4) Synthesize into tables 5) Fail→retry different approach same round 6) Anticipate next question 7) Code over manual 8) English think/Chinese answer 9) Cite sources 10) Use create_document for reports/tables. For PDF files, use read_pdf.
+Tool guide:
+- "what files/documents do I have" → list_downloads()
+- "search my files for X" → list_downloads(user_search='X')
+- "remember/save this" → memory_search(action='save', key='...', value='...')
+- "what did I ask before" → memory_search(action='list')
+- project files → execute_command('ls ...') or glob_files
 
-Output: Lead with conclusion, use Markdown tables, cite sources with URLs."""
+Rules: 1) Batch date+queries together 2) NEVER answer without tools if question requires data — files, documents, memories, stocks, news ALL require tool calls. Never say "task completed" without tool evidence 3) Parallel calls only 4) Synthesize into tables 5) Fail→retry same round 6) Think English, answer Chinese 7) Cite sources 8) Use create_document for reports.
+
+Output: Lead with conclusion, Markdown tables, cite sources with URLs."""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。
