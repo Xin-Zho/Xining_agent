@@ -770,6 +770,7 @@ def compat_register(body: AuthRequest):
     if getattr(body, 'invite_code', '') != INVITE_CODE:
         return JSONResponse({"ok": False, "error": "认证码错误"}, 403)
     if not body.username.strip() or len(body.password) < 8:
+        return JSONResponse({"ok": False, "error": "用户名不能为空，密码至少8位"}, 422)
 
     conn = get_db()
     existing = conn.execute(
