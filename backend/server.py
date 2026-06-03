@@ -1086,7 +1086,7 @@ async def chat_stream_legacy(req: LegacyChatRequest):
 @app.on_event("startup")
 def startup():
     init_db()
-    print(f"数据库已初始化: {DB_PATH}")
+    print(f"数据库已初始化 (chat/agent/memory)")
     print(f"Agent 模式: react")
     print(f"DeepSeek: {'已配置' if deepseek else '未配置'}")
     print(f"API 文档: http://127.0.0.1:8000/docs")
