@@ -46,7 +46,7 @@ class WebSocketManager:
 
 def _save_step(task_id: int, step_number: int, step_type: str, status: str = "running",
                tool_name: str = None, tool_args: dict = None, thought: str = None):
-    conn = get_db()
+    conn = get_db("agent")
     conn.execute(
         """INSERT INTO agent_steps (task_id, step_number, status, step_type, tool_name, tool_args, thought)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",

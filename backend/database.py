@@ -1,22 +1,28 @@
 import os
 import sqlite3
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "data", "chat.db")
+DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 
+# 三 Bank 分区：chat.db(用户+对话) / agent.db(任务+步骤) / memory.db(记忆+下载)
+def _db_path(name: str) -> str:
+    return os.path.join(DATA_DIR, f"{name}.db")
 
-def get_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
+def get_db(name: str = "chat") -> sqlite3.Connection:
+    conn = sqlite3.connect(_db_path(name), check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=5000")  # 5秒写锁等待，避免 database locked
+    conn.execute("PRAGMA busy_timeout=5000")
+    if name == "chat":
+        conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = get_db()
-    conn.executescript("""
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    # chat.db — 用户 + 对话 + 消息
+    c = get_db("chat")
+    c.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
@@ -32,16 +38,20 @@ def init_db():
         CREATE TABLE IF NOT EXISTS messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-            role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+            role TEXT NOT NULL CHECK(role IN ('user','assistant','system')),
             content TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_messages_conv
-            ON messages(conversation_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
+    """)
+    c.commit(); c.close()
 
+    # agent.db — Agent 任务 + 步骤
+    a = get_db("agent")
+    a.executescript("""
         CREATE TABLE IF NOT EXISTS agent_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL REFERENCES users(id),
+            user_id INTEGER NOT NULL,
             title TEXT NOT NULL,
             description TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending'
@@ -50,13 +60,12 @@ def init_db():
                 CHECK(agent_mode IN ('react','plan_solve')),
             plan_json TEXT,
             final_answer TEXT,
-            conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+            conversation_id INTEGER,
             total_tokens INTEGER DEFAULT 0,
             duration_ms INTEGER DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-
         CREATE TABLE IF NOT EXISTS agent_steps (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL REFERENCES agent_tasks(id) ON DELETE CASCADE,
@@ -72,35 +81,32 @@ def init_db():
             duration_ms INTEGER,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+        CREATE INDEX IF NOT EXISTS idx_agent_tasks_user ON agent_tasks(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_agent_steps_task ON agent_steps(task_id, step_number);
+    """)
+    a.commit(); a.close()
 
-        CREATE INDEX IF NOT EXISTS idx_agent_tasks_user
-            ON agent_tasks(user_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_agent_steps_task
-            ON agent_steps(task_id, step_number);
-
-        -- Long-term memory table
+    # memory.db — 长期记忆 + 下载记录
+    m = get_db("memory")
+    m.executescript("""
         CREATE TABLE IF NOT EXISTS agent_memory (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL REFERENCES users(id),
+            user_id INTEGER NOT NULL,
             key TEXT NOT NULL,
             value TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(user_id, key)
         );
-        CREATE INDEX IF NOT EXISTS idx_agent_memory_user
-            ON agent_memory(user_id, key);
-
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_user ON agent_memory(user_id, key);
         CREATE TABLE IF NOT EXISTS downloads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL REFERENCES users(id),
+            user_id INTEGER NOT NULL,
             filename TEXT NOT NULL,
             filepath TEXT NOT NULL,
             size_bytes INTEGER DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_downloads_user
-            ON downloads(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_downloads_user ON downloads(user_id, created_at);
     """)
-    conn.commit()
-    conn.close()
+    m.commit(); m.close()

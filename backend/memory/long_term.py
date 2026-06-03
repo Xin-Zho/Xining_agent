@@ -25,7 +25,7 @@ class LongTermMemory:
 
     def save(self, key: str, value: str):
         """保存或更新一条记忆"""
-        conn = get_db()
+        conn = get_db("memory")
         conn.execute(
             """INSERT INTO agent_memory (user_id, key, value, updated_at)
                VALUES (?, ?, ?, datetime('now'))
@@ -38,7 +38,7 @@ class LongTermMemory:
 
     def get(self, key: str) -> str:
         """读取一条记忆，不存在返回空字符串"""
-        conn = get_db()
+        conn = get_db("memory")
         row = conn.execute(
             "SELECT value FROM agent_memory WHERE user_id = ? AND key = ?",
             (self.user_id, key),
@@ -48,7 +48,7 @@ class LongTermMemory:
 
     def list_keys(self) -> list[str]:
         """列出所有记忆的 key"""
-        conn = get_db()
+        conn = get_db("memory")
         rows = conn.execute(
             "SELECT key FROM agent_memory WHERE user_id = ? ORDER BY updated_at DESC",
             (self.user_id,),
@@ -58,7 +58,7 @@ class LongTermMemory:
 
     def list_all(self) -> list[dict]:
         """列出所有记忆（含内容）"""
-        conn = get_db()
+        conn = get_db("memory")
         rows = conn.execute(
             "SELECT key, value, updated_at FROM agent_memory WHERE user_id = ? ORDER BY updated_at DESC",
             (self.user_id,),
@@ -71,7 +71,7 @@ class LongTermMemory:
 
     def search(self, keyword: str) -> list[dict]:
         """简单关键词搜索（大小写不敏感）"""
-        conn = get_db()
+        conn = get_db("memory")
         rows = conn.execute(
             "SELECT key, value FROM agent_memory WHERE user_id = ? "
             "AND (key LIKE ? OR value LIKE ?)",
@@ -82,7 +82,7 @@ class LongTermMemory:
 
     def delete(self, key: str):
         """删除一条记忆"""
-        conn = get_db()
+        conn = get_db("memory")
         conn.execute(
             "DELETE FROM agent_memory WHERE user_id = ? AND key = ?",
             (self.user_id, key),
@@ -92,7 +92,7 @@ class LongTermMemory:
 
     def clear(self):
         """清空所有记忆"""
-        conn = get_db()
+        conn = get_db("memory")
         conn.execute("DELETE FROM agent_memory WHERE user_id = ?", (self.user_id,))
         conn.commit()
         conn.close()
@@ -102,7 +102,7 @@ class LongTermMemory:
         把记忆格式化为一段上下文文本，可注入到 System Prompt。
         返回最近更新的 max_items 条记忆。
         """
-        conn = get_db()
+        conn = get_db("memory")
         rows = conn.execute(
             "SELECT key, value FROM agent_memory WHERE user_id = ? "
             "ORDER BY updated_at DESC LIMIT ?",

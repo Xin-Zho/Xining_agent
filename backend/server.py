@@ -48,7 +48,7 @@ from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
 from pydantic import BaseModel
 
-from .database import get_db, init_db, DB_PATH
+from .database import get_db, init_db
 from .auth import (
     create_token, get_current_user, verify_token,
     hash_password, verify_password, security, SECRET_KEY,
@@ -68,6 +68,8 @@ DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "false").strip().lower() != "false"
 INVITE_CODE = os.environ.get("INVITE_CODE", "xin-agent-2026")
 MAX_HISTORY_ROUNDS = 20
+
+SYSTEM_PROMPT = "You are a helpful assistant. Answer concisely in Chinese. IMPORTANT: If asked about real-time events, specific dates, or factual data you are unsure about, you MUST tell the user you don't have real-time access and suggest switching to Agent mode for tool-based verification. Never fabricate earthquake reports, stock prices, news events, or weather data. 用中文回复。"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -127,7 +129,7 @@ def register(body: AuthRequest):
     if not body.username.strip() or len(body.password) < 8:
         raise HTTPException(status_code=422, detail="用户名不能为空，密码至少4位")
 
-    conn = get_db()
+    conn = get_db("chat")
     existing = conn.execute(
         "SELECT id FROM users WHERE username = ?", (body.username.strip(),)
     ).fetchone()
@@ -148,7 +150,7 @@ def register(body: AuthRequest):
 
 @app.post("/api/login")
 def login(body: AuthRequest):
-    conn = get_db()
+    conn = get_db("chat")
     user = conn.execute(
         "SELECT id, username, password_hash FROM users WHERE username = ?",
         (body.username.strip(),),
@@ -165,7 +167,7 @@ def login(body: AuthRequest):
 
 @app.post("/api/chat")
 def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
-    conn = get_db()
+    conn = get_db("chat")
 
     if deepseek is None:
         conn.close()
@@ -260,7 +262,7 @@ async def chat_stream(req: dict | ChatRequest):
                 break
     elif hasattr(req, 'conversation_id'):
         # 新格式
-        conn = get_db()
+        conn = get_db("chat")
         conv = conn.execute(
             "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
             (req.conversation_id, get_current_user.__wrapped__),
@@ -270,7 +272,7 @@ async def chat_stream(req: dict | ChatRequest):
             raise HTTPException(status_code=404, detail="对话不存在")
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        conn2 = get_db()
+        conn2 = get_db("chat")
         rows = conn2.execute(
             """SELECT role, content FROM messages
                WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?""",
@@ -393,7 +395,7 @@ async def upload(file: UploadFile = File(...),
 
 @app.get("/api/conversations")
 def list_conversations(user: dict = Depends(get_current_user)):
-    conn = get_db()
+    conn = get_db("chat")
     rows = conn.execute(
         """SELECT id, title, created_at FROM conversations
            WHERE user_id = ? ORDER BY created_at DESC""",
@@ -410,7 +412,7 @@ def list_conversations(user: dict = Depends(get_current_user)):
 def create_conversation(
     body: CreateConversationRequest, user: dict = Depends(get_current_user)
 ):
-    conn = get_db()
+    conn = get_db("chat")
     cur = conn.execute(
         "INSERT INTO conversations (user_id, title) VALUES (?, ?)",
         (user["id"], body.title),
@@ -423,7 +425,7 @@ def create_conversation(
 
 @app.get("/api/conversations/{conversation_id}")
 def get_conversation(conversation_id: int, user: dict = Depends(get_current_user)):
-    conn = get_db()
+    conn = get_db("chat")
     conv = conn.execute(
         "SELECT id, title, created_at FROM conversations WHERE id = ? AND user_id = ?",
         (conversation_id, user["id"]),
@@ -456,7 +458,7 @@ async def create_agent_task(
     body: CreateAgentTaskRequest, user: dict = Depends(get_current_user)
 ):
     agent_mode = body.agent_mode or "react"
-    conn = get_db()
+    conn = get_db("agent")
     cur = conn.execute(
         """INSERT INTO agent_tasks (user_id, title, description, status, agent_mode, conversation_id)
            VALUES (?, ?, ?, 'pending', ?, ?)""",
@@ -479,7 +481,7 @@ async def create_agent_task(
 
 @app.get("/api/agent/tasks")
 def list_agent_tasks(user: dict = Depends(get_current_user)):
-    conn = get_db()
+    conn = get_db("agent")
     rows = conn.execute(
         """SELECT id, title, status, agent_mode, total_tokens, duration_ms, created_at
            FROM agent_tasks WHERE user_id = ? ORDER BY created_at DESC""",
@@ -499,7 +501,7 @@ def list_agent_tasks(user: dict = Depends(get_current_user)):
 
 @app.get("/api/agent/tasks/{task_id}")
 def get_agent_task(task_id: int, user: dict = Depends(get_current_user)):
-    conn = get_db()
+    conn = get_db("agent")
     task = conn.execute(
         "SELECT * FROM agent_tasks WHERE id = ? AND user_id = ?",
         (task_id, user["id"]),
@@ -542,7 +544,7 @@ def get_agent_task(task_id: int, user: dict = Depends(get_current_user)):
 
 @app.delete("/api/agent/tasks/{task_id}")
 def delete_agent_task(task_id: int, user: dict = Depends(get_current_user)):
-    conn = get_db()
+    conn = get_db("agent")
     task = conn.execute(
         "SELECT id FROM agent_tasks WHERE id = ? AND user_id = ?",
         (task_id, user["id"]),
@@ -582,7 +584,7 @@ async def agent_websocket(websocket: WebSocket, task_id: int):
         await websocket.close(code=4002, reason="Invalid token")
         return
 
-    conn = get_db()
+    conn = get_db("agent")
     task = conn.execute(
         "SELECT id, agent_mode FROM agent_tasks WHERE id = ? AND user_id = ?",
         (task_id, user["id"]),
@@ -675,7 +677,7 @@ def download_file(filename: str, user: dict = Depends(get_current_user)):
     if user.get("username") == "admin":
         return FileResponse(filepath, filename=os.path.basename(filename))
 
-    conn = get_db()
+    conn = get_db("memory")
     row = conn.execute(
         "SELECT user_id FROM downloads WHERE filepath = ? ORDER BY id DESC LIMIT 1",
         (filepath,),
@@ -691,7 +693,7 @@ def download_file(filename: str, user: dict = Depends(get_current_user)):
 @app.get("/api/downloads")
 def list_downloads(user: dict = Depends(get_current_user)):
     """列出当前用户的可下载文件"""
-    conn = get_db()
+    conn = get_db("memory")
     rows = conn.execute(
         "SELECT filename, filepath, size_bytes, created_at FROM downloads WHERE user_id = ? ORDER BY created_at DESC",
         (user["id"],),
@@ -719,7 +721,7 @@ if os.path.isdir(STATIC_DIR):
     @app.get("/downloads")
     async def downloads_page(user: dict = Depends(get_current_user)):
         from urllib.parse import quote
-        conn = get_db()
+        conn = get_db("memory")
         rows = conn.execute(
             "SELECT filename, size_bytes, created_at FROM downloads WHERE user_id = ? ORDER BY created_at DESC",
             (user["id"],),
@@ -799,7 +801,7 @@ def compat_register(body: AuthRequest):
     if not body.username.strip() or len(body.password) < 8:
         return JSONResponse({"ok": False, "error": "用户名不能为空，密码至少8位"}, 422)
 
-    conn = get_db()
+    conn = get_db("memory")
     existing = conn.execute(
         "SELECT id FROM users WHERE username = ?", (body.username.strip(),)
     ).fetchone()
@@ -821,7 +823,7 @@ def compat_register(body: AuthRequest):
 @app.post("/api/auth/login")
 def compat_login(body: AuthRequest):
     """兼容前端 /api/auth/login 路径，返回 {ok, token, username} 格式"""
-    conn = get_db()
+    conn = get_db("memory")
     user = conn.execute(
         "SELECT id, username, password_hash FROM users WHERE username = ?",
         (body.username.strip(),),
@@ -905,7 +907,7 @@ async def compat_agent_stream(req: LegacyAgentRequest):
         yield f"data: {json.dumps({'type': 'start', 'mode': agent_mode})}\n\n"
 
         # 创建临时任务记录
-        conn = get_db()
+        conn = get_db("agent")
 
         # 获取用户ID（单用户模式，取第一个用户）
         uid_row = conn.execute("SELECT id FROM users ORDER BY id LIMIT 1").fetchone()
@@ -931,7 +933,7 @@ async def compat_agent_stream(req: LegacyAgentRequest):
             last_step = 0
             while not bg_task.done():
                 await asyncio.sleep(0.5)
-                conn = get_db()
+                conn = get_db("agent")
                 steps = conn.execute(
                     "SELECT * FROM agent_steps WHERE task_id = ? AND step_number > ? ORDER BY step_number",
                     (task_id, last_step),
@@ -1004,7 +1006,7 @@ async def compat_agent_stream(req: LegacyAgentRequest):
                     yield f"data: {json.dumps({'type': 'step', 'step': step_data})}\n\n"
 
             # Agent 完成
-            conn = get_db()
+            conn = get_db("chat")
             task = conn.execute("SELECT * FROM agent_tasks WHERE id = ?", (task_id,)).fetchone()
             conn.close()
 
