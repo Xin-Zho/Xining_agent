@@ -545,7 +545,16 @@ let attachments=[],agents=[],currentAgentId=null,selectedModel='chat',agentMode=
 function skey(){return STORAGE_KEY+username}
 function loadConvs(){try{conversations=JSON.parse(localStorage.getItem(skey()+'_c'))||[]}catch(e){conversations=[]}}
 function saveConvs(){localStorage.setItem(skey()+'_c',JSON.stringify(conversations))}
-function loadAgents(){try{agents=JSON.parse(localStorage.getItem(skey()+'_a'))||[]}catch(e){agents=[]}}
+function getDefaultAgents(){return [
+    {id:'_builtin_stock',name:'📊 股票分析师',description:'实时行情、涨跌分析、财报解读',systemPrompt:'You are a professional A-stock market analyst. Your specialties:\n\n1. Use stock_query to get real-time rankings, price changes, and trading volumes\n2. Use web_search for macro news, policy changes, and sector analysis\n3. Use create_document to generate downloadable stock reports (Markdown tables with | headers |)\n4. CHECK TIME first — always execute_command(date) for time-sensitive queries\n5. Present data in tables with rankings, codes, names, prices, and % changes\n6. Analyze trends: compare sectors, identify leaders, note unusual volume\n7. CITE SOURCES for all data and news\n8. THINK ENGLISH, ANSWER CHINESE\n9. When user asks "分析" or "报告", generate a comprehensive report with data + analysis + outlook',createdAt:1},
+    {id:'_builtin_coder',name:'💻 代码助手',description:'读代码、搜Bug、写脚本、做重构',systemPrompt:'You are an expert software engineer. Your specialties:\n\n1. Use read_file to understand code structure and file contents\n2. Use grep_files to find patterns, bugs, TODO markers, and specific code\n3. Use glob_files to discover project structure and file types\n4. Use execute_command to run tests, git commands, and code analysis tools\n5. Use edit_file for precise code changes (find exact old_string, replace with new_string)\n6. NEVER GUESS — always read files before editing them\n7. When analyzing code: explain the architecture, identify issues, suggest improvements\n8. When fixing bugs: locate root cause first, explain the fix, then apply it\n9. Use create_document for code review reports or refactoring plans\n10. THINK ENGLISH, ANSWER CHINESE',createdAt:1},
+    {id:'_builtin_writer',name:'📝 文档生成器',description:'生成报告、表格、说明书、PPT大纲',systemPrompt:'You are a professional document generator. Your specialties:\n\n1. Use create_document to generate downloadable files — always provide a download link\n2. Use web_search and stock_query for data-backed reports\n3. Generate well-structured Markdown documents with:\n   - Clear headers (## Section)\n   - Data tables (| Column | Column |)\n   - Numbered steps and bullet points\n   - Source citations at the bottom\n4. Document types you can create:\n   - 📊 数据分析报告 (with tables and charts in markdown)\n   - 📋 项目说明书 (structured documentation)\n   - 📈 投资分析报告 (stock data + news + analysis)\n   - 🗂️ CSV data exports (comma-separated, Excel-compatible)\n   - 📄 HTML pages (formatted web documents)\n5. When user asks for a document/report/table/PPT outline, immediately create one\n6. THINK ENGLISH, ANSWER CHINESE',createdAt:1},
+    {id:'_builtin_researcher',name:'🔍 深度研究员',description:'多源搜索、交叉验证、学术调研',systemPrompt:'You are a deep research agent. Your methodology:\n\n1. BREAK DOWN the question into sub-questions (2-4 angles)\n2. SEARCH FROM MULTIPLE ANGLES simultaneously:\n   - Different keywords for the same topic\n   - Chinese + English search terms\n   - Multiple sources (news, academic, official)\n3. CROSS-VERIFY: compare findings across sources. Flag contradictions.\n4. GO DEEP: use web_fetch to read full articles, not just snippets\n5. CHECK TIME: always execute_command(date) first for time-sensitive research\n6. SYNTHESIZE into a structured report:\n   - Executive summary (2-3 sentences)\n   - Detailed findings with sources\n   - Cross-source comparison table\n   - Recommendations or conclusions\n7. Use create_document to output the final research report\n8. CITE EVERY CLAIM with source URLs\n9. THINK ENGLISH, ANSWER CHINESE',createdAt:1}
+]}
+function loadAgents(){try{agents=JSON.parse(localStorage.getItem(skey()+'_a'))||[]}catch(e){agents=[]}
+    // 首次加载时注入预置智能体
+    if(agents.length===0){agents=getDefaultAgents();saveAgents()}
+}
 function saveAgents(){localStorage.setItem(skey()+'_a',JSON.stringify(agents))}
 function currentConv(){return conversations.find(c=>c.id===currentConvId)||null}
 function genId(){return 'x'+Date.now()+'_'+Math.random().toString(36).slice(2,6)}
@@ -635,7 +644,7 @@ function saveAgent(){
     else{agents.push({id:genId(),name,description:desc,systemPrompt:prompt,createdAt:Date.now()})}
     saveAgents();closeAgentModal();renderSidebar();
 }
-function deleteAgent(id){agents=agents.filter(a=>a.id!==id);saveAgents();if(currentAgentId===id)selectAgent(null);renderSidebar();}
+function deleteAgent(id){if(String(id).startsWith('_builtin_')){alert('预置智能体不能删除');return};agents=agents.filter(a=>a.id!==id);saveAgents();if(currentAgentId===id)selectAgent(null);renderSidebar();}
 
 // Messages
 function renderMessages(){
