@@ -801,7 +801,7 @@ def compat_register(body: AuthRequest):
     if not body.username.strip() or len(body.password) < 8:
         return JSONResponse({"ok": False, "error": "用户名不能为空，密码至少8位"}, 422)
 
-    conn = get_db("memory")
+    conn = get_db("chat")
     existing = conn.execute(
         "SELECT id FROM users WHERE username = ?", (body.username.strip(),)
     ).fetchone()
@@ -823,7 +823,7 @@ def compat_register(body: AuthRequest):
 @app.post("/api/auth/login")
 def compat_login(body: AuthRequest):
     """兼容前端 /api/auth/login 路径，返回 {ok, token, username} 格式"""
-    conn = get_db("memory")
+    conn = get_db("chat")
     user = conn.execute(
         "SELECT id, username, password_hash FROM users WHERE username = ?",
         (body.username.strip(),),
