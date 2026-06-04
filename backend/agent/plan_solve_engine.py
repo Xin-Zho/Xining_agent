@@ -44,6 +44,11 @@ class PlanSolveEngine:
         self.tool_map = {t.name: t for t in tools}
         self.ws = ws_manager
         self._cancellations: set[int] = set()
+        self._tool_desc = "Tools: " + ", ".join(
+            t.to_openai_schema()["function"]["name"] + "("
+            + t.to_openai_schema()["function"]["description"][:50] + ")"
+            for t in tools
+        ) if tools else ""
 
     async def run(self, task_description: str, user_id: int, task_id: int, max_steps: int = 5):
         start_time = time.time()
@@ -284,12 +289,9 @@ class PlanSolveEngine:
 
     async def _call_llm(self, messages: list[dict], tools: list[dict] = None):
         cached_messages = list(messages)
-        if tools:
-            tool_desc = "Tools: " + ", ".join(
-                t["function"]["name"] + "(" + t["function"]["description"][:50] + ")"
-                for t in tools
-            )
-            cached_messages.insert(1, {"role": "system", "content": tool_desc})
+        if tools and self._tool_desc:
+            if len(cached_messages) < 2 or cached_messages[1].get("content", "")[:6] != "Tools:":
+                cached_messages.insert(1, {"role": "system", "content": self._tool_desc})
         kwargs = {
             "model": "deepseek-chat",
             "messages": cached_messages,

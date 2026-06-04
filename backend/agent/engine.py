@@ -88,6 +88,12 @@ class AgentEngine:
         self.ws = ws_manager
         self._cancellations: set[int] = set()
         self._called_history: list[str] = []  # 防重复调用
+        # 预计算工具描述（缓存优化：每次 call_llm 复用同一段文本，不重算）
+        self._tool_desc = "Tools: " + ", ".join(
+            t.to_openai_schema()["function"]["name"] + "("
+            + t.to_openai_schema()["function"]["description"][:50] + ")"
+            for t in tools
+        ) if tools else ""
 
     async def run(self, task_description: str, user_id: int, task_id: int,
                   max_iterations: int = MAX_ITERATIONS):
@@ -412,15 +418,12 @@ class AgentEngine:
             return "pass"
 
     async def _call_llm(self, messages: list[dict], tools: list[dict] = None):
-        # 构建带缓存优化的消息列表：system prompt + inline tools → 稳定前缀可被 DeepSeek 缓存
+        # 稳定前缀 = system_prompt + tool_desc（固定不变）→ DeepSeek 自动缓存命中
         cached_messages = list(messages)
-        if tools:
-            tool_desc = "Available tools: " + ", ".join(
-                t["function"]["name"] + "(" + t["function"]["description"][:60] + ")"
-                for t in tools
-            )
-            # 在 system 之后插入稳定的 tools 消息（作为第二个 system 消息，缓存友好）
-            cached_messages.insert(1, {"role": "system", "content": tool_desc})
+        if tools and self._tool_desc:
+            # 只在原消息还没有 tool_desc 时插入（避免 _compress_context 导致的重复）
+            if len(cached_messages) < 2 or cached_messages[1].get("content", "")[:6] != "Tools:":
+                cached_messages.insert(1, {"role": "system", "content": self._tool_desc})
 
         kwargs = {
             "model": "deepseek-chat",
