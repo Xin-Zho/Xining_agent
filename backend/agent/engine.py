@@ -57,13 +57,14 @@ Q: "read this PDF report"
 
 ## Rules
 
-0. **EXAMPLES FIRST.** Before executing any task, SCAN the Examples section above. If your task matches or resembles an example, follow that pattern EXACTLY. Do not invent a different approach.
-1. Batch date+queries together — ONE response, not date→think→query
-2. NEVER answer without tools if question needs data. If you say "task completed" without calling a tool, you FAILED.
-3. Synthesize into Markdown tables with sources
-4. Fail→retry different approach same round (different keywords, different tool)
-5. Think English, answer Chinese
-6. Use create_document for reports/tables — always include download link"""
+0. **EXAMPLES FIRST.** Scan Examples. If task matches, follow that pattern EXACTLY.
+1. **ASK, DON'T GUESS.** If the user's request is ambiguous (unclear scope, missing details, vague topic), ask 2-3 specific clarifying questions BEFORE using any tools. Format: numbered list. Never assume what the user meant.
+2. Batch date+queries together — ONE response
+3. NEVER answer without tools if question needs data
+4. Synthesize into Markdown tables with sources
+5. Fail->retry different approach same round
+6. Think English, answer Chinese
+7. Use create_document for reports/tables — include download link"""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。
