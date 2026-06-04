@@ -666,14 +666,20 @@ def agent_modes():
 # ── Downloads (user-scoped) ────────────────────────────────────────────
 
 @app.get("/api/download/{filename:path}")
-def download_file(filename: str, user: dict = Depends(get_current_user)):
-    """下载文件（检查归属权限）。admin 可看所有，用户只看自己的。"""
+def download_file(filename: str, token: str = None, user: dict = Depends(get_current_user)):
+    """下载文件（检查归属权限）。支持 ?token= 查询参数或 Authorization header。"""
+    # 兼容查询参数 token（浏览器直接打开链接时无 header）
+    if not user and token:
+        try:
+            user = verify_token(token)
+        except Exception:
+            raise HTTPException(401, "无效的下载链接，请刷新页面重新生成")
+
     dl_dir = os.path.join(STATIC_DIR, "downloads")
     filepath = os.path.join(dl_dir, os.path.basename(filename))
     if not os.path.isfile(filepath):
         raise HTTPException(404, "文件不存在")
 
-    # admin 可看所有
     if user.get("username") == "admin":
         return FileResponse(filepath, filename=os.path.basename(filename))
 
