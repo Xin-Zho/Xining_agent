@@ -246,7 +246,7 @@ body {
 }
 .ai .bubble strong { color: var(--accent); }
 .ai .bubble h1, .ai .bubble h2, .ai .bubble h3 { color: var(--slate-9); }
-.ai .bubble a { color: var(--accent); font-weight: 500; }
+.ai .bubble a { color: var(--accent); font-weight: 500; text-decoration: underline; }
 .ai .bubble table th { background: var(--accent-subtle); color: var(--accent); }
 .bubble img { max-width: 100%; max-height: 280px; border-radius: var(--radius-sm); margin: 6px 0; display: block; }
 
@@ -849,7 +849,7 @@ function renderMarkdown(text){
     // 链接 [text](url)
     html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+|\/[^\)]+)\)/g,'<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline">$1</a>');
     // 裸 URL
-    html=html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g,'$1<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);word-break:break-all">$2</a>');
+    html=html.replace(/(^|\s)(https?:\/\/[^\s<]+)/g,'$1<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500;text-decoration:underline;word-break:break-all">$2</a>');
     // 换行
     html=html.replace(/\n/g,'<br>');
     return html;
