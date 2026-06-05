@@ -893,9 +893,14 @@ async function sendMessage(){
                 const step=d.step;
                 let label='', detail='';
                 if(step.type==='tool_call'){
-                  label='🔧 <b>'+((step.tool_name||'工具')+'</b>');
+                  const tn=step.tool_name||'工具';
+                  label='🔧 <b>'+tn+'</b>';
                   let obs=step.observation||'';
-                  if(typeof obs==='string'&&obs.startsWith('{')){
+                  // execute_command 显示命令本身，不显示 JSON
+                  if(tn==='execute_command'&&typeof obs==='string'&&obs.startsWith('{')){
+                    try{const o=JSON.parse(obs);obs=o.command||o.output||obs}catch(e){}
+                  }
+                  else if(typeof obs==='string'&&obs.startsWith('{')){
                     try{const o=JSON.parse(obs);obs=o.result||o.content||o.observation||obs}catch(e){}
                   }
                   detail=obs.slice(0,500);

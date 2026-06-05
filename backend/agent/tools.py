@@ -15,15 +15,19 @@
   - glob_files: glob 文件名匹配
 """
 import asyncio
+import ipaddress
 import math
 import fnmatch
 import json
 import os
 import re
+import shlex
+import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Awaitable
+from urllib.parse import urlparse
 
 import httpx
 from duckduckgo_search import DDGS
@@ -154,7 +158,58 @@ async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict
             "results": items[:max_results], "count": len(items)}
 
 
+def _is_public_url(url: str) -> tuple[bool, str]:
+    """检查 URL 是否指向公网地址（防 SSRF）。
+    返回 (is_safe, reason)。阻止内网、环回、链路本地、多云元数据地址。
+    """
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return False, f"无法解析主机名：{url}"
+
+        # 解析主机名到 IP
+        try:
+            ip = ipaddress.ip_address(hostname)
+        except ValueError:
+            # 不是 IP 字面量，DNS 解析
+            try:
+                ip = ipaddress.ip_address(socket.gethostbyname(hostname))
+            except (socket.gaierror, ValueError) as e:
+                return False, f"DNS 解析失败：{hostname} — {e}"
+
+        # 检查是否为私有/保留地址
+        if ip.is_loopback:
+            return False, f"禁止访问环回地址：{hostname} ({ip})"
+        if ip.is_private:
+            return False, f"禁止访问内网地址：{hostname} ({ip})"
+        if ip.is_link_local:
+            return False, f"禁止访问链路本地地址：{hostname} ({ip})"
+        if ip.is_multicast:
+            return False, f"禁止访问多播地址：{hostname} ({ip})"
+        if ip.is_reserved:
+            return False, f"禁止访问保留地址：{hostname} ({ip})"
+
+        # 额外检查常见的云元数据地址
+        blocked_ips = {
+            "169.254.169.254",  # AWS / GCP / Azure 云元数据
+            "100.100.100.200",  # 阿里云元数据
+            "169.254.0.0",      # 链路本地范围起始
+        }
+        if str(ip) in blocked_ips:
+            return False, f"禁止访问云元数据地址：{hostname} ({ip})"
+
+        return True, ""
+    except Exception as e:
+        return False, f"URL 安全检查失败：{e}"
+
+
 async def _web_fetch(url: str) -> dict:
+    # SSRF 防护：仅允许访问公网地址
+    is_safe, reason = _is_public_url(url)
+    if not is_safe:
+        return {"error": reason, "url": url}
+
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url, headers={"User-Agent": "AI-Agent/1.0"})
@@ -231,12 +286,20 @@ async def _read_file(path: str) -> dict:
 
 
 async def _execute_command(command: str) -> dict:
-    """执行 shell 命令（白名单 + 超时 + 危险参数检查）"""
+    """执行 shell 命令（白名单 + 超时 + shell=False 防注入）"""
     if not command.strip():
         return {"error": "命令为空"}
 
-    cmd_name = command.strip().split()[0]
-    cmd_base = os.path.basename(cmd_name)
+    # 使用 shlex 安全解析命令，防止 shell 注入（|、$()、;、&& 等均无效）
+    try:
+        args = shlex.split(command.strip())
+    except ValueError as e:
+        return {"error": f"命令解析失败：{e}"}
+
+    if not args:
+        return {"error": "命令为空"}
+
+    cmd_base = os.path.basename(args[0])
 
     if cmd_base not in ALLOWED_COMMANDS:
         return {
@@ -244,6 +307,7 @@ async def _execute_command(command: str) -> dict:
             "allowed": sorted(ALLOWED_COMMANDS),
         }
 
+    # 额外检查原始命令字符串中的危险模式（即使 shlex 已阻止 shell 注入）
     dangerous = ["rm -rf", "format", "mkfs", "dd if=", "> /dev/", ":(){ :|:& };:"]
     for d in dangerous:
         if d in command.lower():
@@ -252,7 +316,7 @@ async def _execute_command(command: str) -> dict:
     try:
         result = await asyncio.to_thread(
             subprocess.run,
-            command, shell=True, capture_output=True, text=True,
+            args, shell=False, capture_output=True, text=True,
             timeout=10, cwd=PROJECT_ROOT,
         )
         output = result.stdout
@@ -961,7 +1025,6 @@ TOOLS: list[Tool] = [
             "required": ["command"],
         },
         handler=_execute_command,
-        require_confirmation=True,
     ),
     Tool(
         name="grep_files",
