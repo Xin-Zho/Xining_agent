@@ -236,12 +236,12 @@ def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
 
 
 @app.post("/api/chat/stream")
-async def chat_stream(req: dict | ChatRequest):
+async def chat_stream(req: dict | ChatRequest, authorization: str | None = Header(None)):
     """
     流式对话 — SSE 格式
     兼容两种格式:
       - 旧前端: {messages: [...], model: "chat"|"reasoner"}
-      - 新移动端: {conversation_id: int, message: str}
+      - 新移动端: {conversation_id: int, message: str}  (需要 Authorization header)
     """
     if deepseek is None:
         raise HTTPException(status_code=503, detail="DeepSeek chat is not configured.")
@@ -261,11 +261,15 @@ async def chat_stream(req: dict | ChatRequest):
                     user_msg = str(content)
                 break
     elif hasattr(req, 'conversation_id'):
-        # 新格式
+        # 新移动端格式 — 需要认证
+        current_user = _verify_token_from_header(authorization)
+        if not current_user:
+            raise HTTPException(status_code=401, detail="未登录或 token 已过期")
+
         conn = get_db("chat")
         conv = conn.execute(
             "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
-            (req.conversation_id, get_current_user.__wrapped__),
+            (req.conversation_id, current_user["id"]),
         ).fetchone()
         conn.close()
         if not conv:
@@ -574,10 +578,23 @@ def confirm_tool(task_id: int, body: dict):
 
 @app.websocket("/ws/agent/{task_id}")
 async def agent_websocket(websocket: WebSocket, task_id: int):
-    token = websocket.query_params.get("token")
+    """WebSocket 连接 — Token 通过首条消息传递，不放 URL 避免日志泄露"""
+    await websocket.accept()
+
+    # 等待首条认证消息（5 秒超时）
+    try:
+        auth_msg = await asyncio.wait_for(websocket.receive_json(), timeout=5.0)
+    except asyncio.TimeoutError:
+        await websocket.close(code=4001, reason="Auth timeout")
+        return
+    except WebSocketDisconnect:
+        return
+
+    token = auth_msg.get("token") if isinstance(auth_msg, dict) else None
     if not token:
         await websocket.close(code=4001, reason="Missing token")
         return
+
     try:
         user = verify_token(token)
     except HTTPException:
@@ -594,6 +611,8 @@ async def agent_websocket(websocket: WebSocket, task_id: int):
         await websocket.close(code=4004, reason="Task not found")
         return
 
+    # 认证成功，发送确认
+    await websocket.send_json({"type": "auth_ok"})
     await ws_manager.connect(task_id, websocket, user["id"])
 
     try:
@@ -666,14 +685,19 @@ def agent_modes():
 # ── Downloads (user-scoped) ────────────────────────────────────────────
 
 @app.get("/api/download/{filename:path}")
-def download_file(filename: str, token: str = None, user: dict = Depends(get_current_user)):
+def download_file(filename: str, token: str = None, authorization: str | None = Header(None)):
     """下载文件（检查归属权限）。支持 ?token= 查询参数或 Authorization header。"""
-    # 兼容查询参数 token（浏览器直接打开链接时无 header）
-    if not user and token:
+    # 先尝试 token 查询参数，再尝试 Authorization header
+    user = None
+    if token:
         try:
             user = verify_token(token)
         except Exception:
-            raise HTTPException(401, "无效的下载链接，请刷新页面重新生成")
+            user = None
+    if not user and authorization:
+        user = _verify_token_from_header(authorization)
+    if not user:
+        raise HTTPException(401, "请登录后下载文件")
 
     dl_dir = os.path.join(STATIC_DIR, "downloads")
     filepath = os.path.join(dl_dir, os.path.basename(filename))
