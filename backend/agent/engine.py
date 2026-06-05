@@ -64,7 +64,7 @@ Q: "read this PDF report"
 4. Synthesize into Markdown tables with sources
 5. Fail->retry different approach same round
 6. Think English, answer Chinese
-7. Use create_document for reports/tables — include download link"""
+7. Use create_document for reports/tables — include download link. NEVER use file:// protocol — use /api/download/filename only."""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。

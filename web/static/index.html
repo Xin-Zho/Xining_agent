@@ -847,7 +847,8 @@ function renderMarkdown(text){
     // 有序列表 1. item
     html=html.replace(/^\d+\. (.+)$/gm,'<li style="margin-left:16px">$1</li>');
     // 链接 [text](url)
-    html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+|\/[^\)]+)\)/g,function(m,text,url){
+    html=html.replace(/\[([^\]]+)\]\((https?:\/\/[^\)]+|\/?api\/[^\)]+|\/[^\)]+)\)/g,function(m,text,url){
+        url=url.replace(/^file:\/\/\/?/,'');
         if(url.startsWith('/api/download/')&&userToken){url+=url.includes('?')?'&':'?';url+='token='+encodeURIComponent(userToken)}
         return '<a href=\"'+url+'\" target=\"_blank\" rel=\"noopener\" style=\"color:var(--accent);font-weight:500;text-decoration:underline\">'+text+'</a>';
     });
