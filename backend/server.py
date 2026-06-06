@@ -714,7 +714,8 @@ def download_file(filename: str, token: str = None, authorization: str | None = 
     ).fetchone()
     conn.close()
 
-    if not row or row["user_id"] != user["id"]:
+    # 无记录 = 旧文件（权限系统上线前生成），放行
+    if row and row["user_id"] != user["id"]:
         raise HTTPException(403, "无权访问此文件")
 
     return FileResponse(filepath, filename=os.path.basename(filename))
