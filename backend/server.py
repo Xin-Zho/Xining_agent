@@ -750,8 +750,17 @@ if os.path.isdir(STATIC_DIR):
         return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
     @app.get("/downloads")
-    async def downloads_page(user: dict = Depends(get_current_user)):
+    async def downloads_page(token: str = None, authorization: str | None = Header(None)):
         from urllib.parse import quote
+        user = None
+        if token:
+            try: user = verify_token(token)
+            except: pass
+        if not user and authorization:
+            user = _verify_token_from_header(authorization)
+        if not user:
+            return HTMLResponse("<h2>请先登录 <a href='/app'>返回登录</a></h2>", status_code=401)
+
         conn = get_db("memory")
         rows = conn.execute(
             "SELECT filename, size_bytes, created_at FROM downloads WHERE user_id = ? ORDER BY created_at DESC",
