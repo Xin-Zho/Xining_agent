@@ -477,7 +477,6 @@ body {
                 <option value="normal">Aa 标准</option>
                 <option value="large">Aa 大号</option>
             </select>
-            <a id="downloadsLink" href="/downloads" target="_blank" class="logout" style="text-decoration:none">📂 文件</a>
             <button class="logout" onclick="logout()">退出</button>
         </div>
     </aside>
@@ -655,7 +654,6 @@ async function handleAuth(){
         if(!isLoginMode){alert('注册成功，请登录');toggleAuthMode();document.getElementById('authUser').value=u;document.getElementById('authPass').value='';document.getElementById('authCode').value='';return}
         userToken=d.token;username=d.username;
         localStorage.setItem('auth_token',userToken);localStorage.setItem('auth_username',username);
-        document.getElementById('downloadsLink').href='/downloads?token='+userToken;
         showChatPage();
     }catch(e){authError.textContent='网络错误，请重试'}
 }
