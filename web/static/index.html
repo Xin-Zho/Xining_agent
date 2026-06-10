@@ -374,6 +374,48 @@ body {
   color: var(--slate-7); padding: 7px 10px; border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
   margin-bottom: 4px; line-height: 1.5; max-width: 90%;
 }
+.review-bubble {
+  font-size: var(--text-xs); font-family: var(--font-sans);
+  background: #F0FFF0; border-left: 3px solid #22C55E;
+  color: var(--slate-7); padding: 8px 12px; border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  margin-bottom: 4px; line-height: 1.5; max-width: 90%; cursor: pointer;
+}
+.review-bubble .rv-detail { display: none; margin-top: 6px; padding-top: 6px; border-top: 1px solid #DCEFD5; font-size: var(--text-xs); }
+.review-bubble.expanded .rv-detail { display: block; }
+.digest-bubble {
+  font-size: var(--text-xs); font-family: var(--font-sans);
+  background: #F0F4FF; border-left: 3px solid #4A90D9;
+  color: var(--slate-7); padding: 8px 12px; border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  margin-bottom: 4px; line-height: 1.5; max-width: 90%; cursor: pointer;
+}
+.digest-bubble .dg-detail { display: none; margin-top: 6px; padding-top: 6px; border-top: 1px solid #DCE4F5; font-size: var(--text-xs); }
+.digest-bubble.expanded .dg-detail { display: block; }
+.badge-sm {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 11px; font-weight: 600; color: #fff; margin-left: 4px;
+}
+.intervention-bar {
+  border-top: 1px solid var(--border); background: #F8FAFF;
+  padding: 8px 18px; flex-shrink: 0; display: none;
+}
+.intervention-bar.on { display: block; }
+.intervention-row { display: flex; gap: 6px; align-items: center; }
+.intervention-row input {
+  flex: 1; min-height: 32px; padding: 6px 12px;
+  font-size: var(--text-sm); font-family: var(--font-sans); color: var(--text-primary);
+  background: var(--surface); border: 1px solid var(--accent-border); border-radius: var(--radius-sm);
+  outline: none;
+}
+.intervention-row input:focus { border-color: var(--accent); }
+.intervention-row input:disabled { background: var(--slate-2); color: var(--text-tertiary); }
+.intervention-row button {
+  background: var(--accent); color: #fff; border: none; border-radius: var(--radius-sm);
+  padding: 6px 14px; font-size: var(--text-sm); font-weight: 600;
+  font-family: var(--font-sans); cursor: pointer; white-space: nowrap; min-height: 32px;
+}
+.intervention-row button:hover { background: var(--accent-hover); }
+.intervention-row button:disabled { background: var(--slate-3); color: var(--text-tertiary); cursor: not-allowed; }
+.intv-hint { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; text-align: center; }
 
 /* Dify panel */
 #difyPanel button {
@@ -547,7 +589,18 @@ body {
             </p>
         </div>
 
-        <div class="input-area">
+        <!-- Intervention bar -->
+<div class="intervention-bar" id="interventionBar">
+  <div class="intervention-row">
+    <input type="text" id="interventionInput"
+     placeholder="告诉 Agent 调整方向..."
+     onkeydown="if(event.key==='Enter')sendIntervention()">
+    <button id="interventionSendBtn" onclick="sendIntervention()">发送</button>
+  </div>
+  <div class="intv-hint" id="interventionHint"></div>
+</div>
+
+<div class="input-area">
             <div class="token-bar-wrap" id="tokenBarWrap" style="display:none">
                 <span class="token-bar"><span class="token-bar-fill low" id="tokenBarFill" style="width:0%"></span></span>
                 <span id="tokenLabel">0 / 100K</span>
@@ -601,7 +654,7 @@ const agentModal=document.getElementById('agentModal'),editAgentId=document.getE
 const tokenBarWrap=document.getElementById('tokenBarWrap'),tokenBarFill=document.getElementById('tokenBarFill'),tokenLabel=document.getElementById('tokenLabel');
 
 let isLoginMode=true,userToken='',username='',conversations=[],currentConvId=null,isStreaming=false;
-let attachments=[],agents=[],currentAgentId=null,selectedModel='chat',agentMode='react';
+let attachments=[],agents=[],currentAgentId=null,selectedModel='chat',agentMode='react',streamTaskId=null,intvBarState='idle';
 
 // Helpers
 function skey(){return STORAGE_KEY+username}
@@ -859,6 +912,57 @@ function renderMarkdown(text){
     return html;
 }
 
+// Intervention
+function showInterventionBar(taskId){
+  streamTaskId=taskId; intvBarState='idle';
+  const bar=document.getElementById('interventionBar');
+  bar.classList.add('on');
+  document.getElementById('interventionInput').value='';
+  document.getElementById('interventionInput').disabled=false;
+  document.getElementById('interventionSendBtn').disabled=false;
+  document.getElementById('interventionHint').textContent='';
+}
+function hideInterventionBar(){
+  streamTaskId=null; intvBarState='idle';
+  document.getElementById('interventionBar').classList.remove('on');
+}
+function setIntvDisabled(msg){
+  intvBarState='waiting';
+  document.getElementById('interventionInput').disabled=true;
+  document.getElementById('interventionSendBtn').disabled=true;
+  document.getElementById('interventionHint').textContent=msg||'Agent 下次思考时会处理';
+}
+function setIntvEnabled(){
+  intvBarState='idle';
+  document.getElementById('interventionInput').disabled=false;
+  document.getElementById('interventionSendBtn').disabled=false;
+  document.getElementById('interventionHint').textContent='';
+}
+async function sendIntervention(){
+  if(!streamTaskId||intvBarState!=='idle')return;
+  const content=document.getElementById('interventionInput').value.trim();
+  if(!content)return;
+  const fbId='fb-'+Date.now()+'-'+Math.random().toString(36).slice(2,6);
+  setIntvDisabled('正在发送...');
+  try{
+    const r=await fetch('/api/agent/tasks/'+streamTaskId+'/intervene',{
+      method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+userToken},
+      body:JSON.stringify({id:fbId,content,priority:'normal'})
+    });
+    const d=await r.json();
+    if(d.ok){
+      document.getElementById('interventionInput').value='';
+      setIntvDisabled('Agent 下次思考时会处理');
+    }else{
+      setIntvEnabled();
+      document.getElementById('interventionHint').textContent='发送失败: '+(d.reason||'未知');
+    }
+  }catch(e){
+    setIntvEnabled();
+    document.getElementById('interventionHint').textContent='网络错误';
+  }
+}
+
 // Send message
 async function sendMessage(){
     if(agentMode==='dify')return;
@@ -887,8 +991,9 @@ async function sendMessage(){
         const reader=resp.body.getReader(),decoder=new TextDecoder();let buf='';
         while(true){const{done,value}=await reader.read();if(done)break;buf+=decoder.decode(value,{stream:true});const lines=buf.split('\n\n');buf=lines.pop();for(const line of lines){if(!line.startsWith('data: '))continue;let d;try{d=JSON.parse(line.slice(6))}catch(e){continue}
             if(d.type==='start'){
-                // Agent 模式：先不创建回答气泡，等步骤走完再显示答案
-            }
+                // 显示干预输入条
+                if(d.task_id)showInterventionBar(d.task_id);
+              }
             else if(d.type==='step'){
                 const step=d.step;
                 let label='', detail='';
@@ -910,6 +1015,28 @@ async function sendMessage(){
                 }else if(step.type==='plan'){
                   label='📋 <b>计划</b>';
                   detail=(step.thought||'').slice(0,500);
+                }else if(step.type==='review'){
+                  const reviewEl=document.createElement('div');reviewEl.className='msg-row ai';
+                  const rc=step.observation||'方案审校完成';
+                  let reviewHTML='<div class="review-bubble" onclick="this.classList.toggle('expanded')">🔍 <b>方案审校</b>';
+                  try{
+                    const rv=JSON.parse(step.observation||'{}');
+                    if(rv.review){
+                      const rvd=rv.review;let total=0;
+                      ['missing_steps','flawed_logic','boundary_gaps','suggestions'].forEach(k=>{if(rvd[k])total+=rvd[k].length});
+                      reviewHTML+='<span class="badge-sm" style="background:#22C55E">'+total+' 条建议</span>';
+                      reviewHTML+='<div class="rv-detail">';
+                      if(rvd.missing_steps)rvd.missing_steps.forEach(s=>{reviewHTML+='<div style="margin:4px 0">[遗漏] '+s.description+'</div>'});
+                      if(rvd.flawed_logic)rvd.flawed_logic.forEach(s=>{reviewHTML+='<div style="margin:4px 0">[逻辑] '+s.issue+'</div>'});
+                      if(rvd.boundary_gaps)rvd.boundary_gaps.forEach(s=>{reviewHTML+='<div style="margin:4px 0">[边界] '+s.scenario+'</div>'});
+                      if(rvd.suggestions)rvd.suggestions.forEach(s=>{reviewHTML+='<div style="margin:4px 0">['+s.aspect+'] '+s.alternative+'</div>'});
+                      reviewHTML+='</div>';
+                    }
+                  }catch(e){}
+                  reviewHTML+='</div>';
+                  reviewEl.innerHTML=reviewHTML;
+                  messagesDiv.appendChild(reviewEl);scrollBottom();
+                  continue;
                 }else{
                   label='⚡ <b>'+(step.type||'步骤')+'</b>';
                   detail=(step.thought||step.observation||'').slice(0,300);
@@ -918,7 +1045,20 @@ async function sendMessage(){
             }
             else if(d.type==='plan'){const p=document.createElement('div');p.className='msg-row ai';p.innerHTML='<div class="plan-bubble">📋 <b>计划</b><br>'+d.plan.map((s,i)=>(i+1)+'. '+s).join('<br>')+'</div>';messagesDiv.appendChild(p);scrollBottom()}
             else if(d.type==='reflections'){const r=document.createElement('div');r.className='msg-row ai';r.innerHTML='<div class="reflect-bubble">🔄 <b>反思</b><br>'+d.reflections.join('<br>')+'</div>';messagesDiv.appendChild(r);scrollBottom()}
-            else if(d.type==='confirmation_required'){
+            else if(d.type==='intervention_applied'){
+                setIntvEnabled();
+              }
+              else if(d.type==='feedback_digested'){
+                const decConfig={adopted:'已采纳',rejected:'未采纳',partial:'部分采纳',unknown:'已收到'};
+                const decColor={adopted:'#22C55E',rejected:'#EF4444',partial:'#F59E0B',unknown:'#9E9E9E'};
+                const dec=d.decision||'unknown';
+                const b=document.createElement('div');b.className='msg-row ai';
+                b.innerHTML='<div class="digest-bubble" onclick="this.classList.toggle('expanded')">'
+                  +'↗ <b>方向调整</b><span class="badge-sm" style="background:'+(decColor[dec]||'#999')+'">'+(decConfig[dec]||dec)+'</span>'
+                  +'<div class="dg-detail">'+renderMarkdown(d.summary||'Agent 已收到反馈')+'</div></div>';
+                messagesDiv.appendChild(b);scrollBottom();
+              }
+              else if(d.type==='confirmation_required'){
                 const overlay=document.getElementById('confirmOverlay');
                 document.getElementById('confirmDetail').textContent=d.tool_name+' '+JSON.stringify(d.args,null,2);
                 document.getElementById('confirmWaiting').textContent='等待确认... (60s timeout)';
@@ -927,10 +1067,12 @@ async function sendMessage(){
                 _confirmTaskId=d.task_id;_confirmStep=d.step_num;
             }
             else if(d.type==='task_error'||d.type==='task_cancelled'){
+                hideInterventionBar();
                 document.getElementById('confirmOverlay').style.display='none';
                 _confirmTaskId=null;_confirmStep=null;
             }
             else if(d.type==='answer'){
+                hideInterventionBar();
                 // 回答放在所有步骤之后
                 aiBubble=addMsgBubble('ai','');full=d.answer;
                 aiBubble.innerHTML=renderMarkdown(d.answer);scrollBottom();

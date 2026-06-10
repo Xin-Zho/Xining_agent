@@ -11,6 +11,7 @@ import time
 
 from .tools import Tool
 from .websocket_manager import WebSocketManager, _save_step, _update_step, _update_task
+from .review_prompt import REVIEW_SYSTEM_PROMPT
 from ..llm_client import estimate_tokens
 
 PLAN_SOLVE_SYSTEM_PROMPT = """You are a planning+execution agent.
@@ -157,11 +158,79 @@ class PlanSolveEngine:
                 "plan": plan,
             })
 
+            # ── 阶段 1.5：副 Agent 审校方案 ──────────────
+            step_number += 1
+            _save_step(task_id, step_number, "review", status="running",
+                       thought="副 Agent 审校方案中...")
+
+            await self.ws.broadcast(task_id, "step_start", {
+                "step_num": step_number,
+                "type": "review",
+                "message": "Reviewing plan for gaps...",
+            })
+
+            plan_for_review = json.dumps({
+                "plan": plan,
+            }, ensure_ascii=False)
+
+            review_messages = [
+                {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Review this plan:\n\n{plan_for_review}"},
+            ]
+
+            review_resp = await self._call_llm(review_messages)
+            total_tokens += review_resp.usage.total_tokens if review_resp.usage else 0
+            review_text = review_resp.choices[0].message.content or "{}"
+
+            try:
+                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', review_text)
+                if json_match:
+                    review_text = json_match.group(1).strip()
+                review_data = json.loads(review_text)
+            except json.JSONDecodeError:
+                review_data = {
+                    "missing_steps": [],
+                    "flawed_logic": [],
+                    "boundary_gaps": [],
+                    "suggestions": [],
+                    "_parse_error": review_text[:200]
+                }
+
+            has_findings = any(
+                review_data.get(k)
+                for k in ["missing_steps", "flawed_logic", "boundary_gaps", "suggestions"]
+            )
+
+            _update_step(task_id, step_number, "completed",
+                         tool_result={"review": review_data}, duration_ms=0)
+
+            finding_count = sum(len(review_data.get(k, [])) for k in ['missing_steps', 'flawed_logic', 'boundary_gaps', 'suggestions'])
+
+            await self.ws.broadcast(task_id, "step_complete", {
+                "step_num": step_number,
+                "type": "review",
+                "content": "方案审校完成" if not has_findings else f"发现 {finding_count} 条改进建议",
+                "review": review_data,
+            })
+
             # ── 阶段 2：逐步执行（带消息连续性）───────
             results = []
             context = f"Task: {task_description}\n\nPlan:\n" + "\n".join(
                 f"{i}. {s}" for i, s in enumerate(plan, 1)
             )
+
+            # 将审校结果注入执行上下文
+            if has_findings:
+                review_summary = f"""\n\n[方案审校结果]
+副 Agent 对方案进行了审校，发现以下改进点：
+
+遗漏步骤：{json.dumps(review_data.get('missing_steps', []), ensure_ascii=False, indent=2)}
+逻辑缺陷：{json.dumps(review_data.get('flawed_logic', []), ensure_ascii=False, indent=2)}
+边界缺口：{json.dumps(review_data.get('boundary_gaps', []), ensure_ascii=False, indent=2)}
+优化建议：{json.dumps(review_data.get('suggestions', []), ensure_ascii=False, indent=2)}
+
+请逐条判断是否采纳，修正方案后继续执行。"""
+                context += review_summary
 
             for i, step_desc in enumerate(plan, 1):
                 if task_id in self._cancellations:

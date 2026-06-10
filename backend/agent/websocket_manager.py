@@ -10,14 +10,23 @@ class WebSocketManager:
     def __init__(self):
         self._connections: dict[int, WebSocket] = {}
         self.confirmations: dict[int, dict] = {}
+        self._agent_status_cache: dict[int, str] = {}  # Agent 状态缓存
+
+    def update_agent_status(self, task_id: int, status: str):
+        """engine 在状态变化时调用，供 ack 消息使用"""
+        self._agent_status_cache[task_id] = status
+
+    def get_agent_status(self, task_id: int) -> str:
+        return self._agent_status_cache.get(task_id, "executing_tool")
 
     async def connect(self, task_id: int, ws: WebSocket, user_id: int):
-        await ws.accept()
+        # accept() 由调用方在认证完成后执行，这里只登记连接
         self._connections[task_id] = ws
 
     def disconnect(self, task_id: int):
         self._connections.pop(task_id, None)
         self.confirmations.pop(task_id, None)
+        self._agent_status_cache.pop(task_id, None)
 
     async def broadcast(self, task_id: int, event_type: str, payload: dict):
         ws = self._connections.get(task_id)

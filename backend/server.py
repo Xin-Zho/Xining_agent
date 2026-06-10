@@ -57,6 +57,7 @@ from .models import (
     AuthRequest, ChatRequest, CreateConversationRequest, CreateAgentTaskRequest,
 )
 from .agent import AgentEngine, PlanSolveEngine, TOOLS, WebSocketManager
+from .agent.intervention import InterventionHandler
 from .llm_client import LLMClient
 from .context_manager import ContextManager
 from .training import DialogueLogger, RuleExtractor
@@ -89,6 +90,7 @@ deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
     if _has_valid_deepseek_key() else None
 
 ws_manager = WebSocketManager()
+intervention_handler = InterventionHandler()
 llm_client = LLMClient() if deepseek else None
 ctx_manager = ContextManager(llm_client)
 dialogue_logger = DialogueLogger()
@@ -102,7 +104,7 @@ def _get_engine(agent_mode: str):
     if agent_mode == "plan_solve":
         return PlanSolveEngine(deepseek, TOOLS, ws_manager)
     else:
-        return AgentEngine(deepseek, TOOLS, ws_manager)
+        return AgentEngine(deepseek, TOOLS, ws_manager, intervention_handler)
 
 
 # ── App ─────────────────────────────────────────────────────────────────
@@ -619,11 +621,69 @@ async def agent_websocket(websocket: WebSocket, task_id: int):
         while True:
             msg = await websocket.receive_json()
             action = msg.get("action")
-            if action == "cancel":
+            msg_type = msg.get("type")
+
+            if action == "cancel" or msg_type == "cancel":
+                await intervention_handler.cancel(str(task_id))
                 engine = _get_engine(task["agent_mode"])
                 await engine.cancel(task_id)
+
             elif action == "confirm":
                 ws_manager.confirmations[task_id] = msg
+
+            elif msg_type == "intervention":
+                # 干预仅支持 ReAct 引擎
+                if task["agent_mode"] != "react":
+                    await websocket.send_json({
+                        "type": "intervention_rejected",
+                        "id": msg.get("id", ""),
+                        "reason": "unsupported_mode",
+                    })
+                    continue
+
+                # 用户反馈
+                fb_id = msg.get("id") or msg.get("payload", {}).get("id", "")
+                content = msg.get("content") or msg.get("payload", {}).get("content", "")
+                priority = msg.get("priority") or msg.get("payload", {}).get("priority", "normal")
+
+                feedback_item = {"id": fb_id, "content": content, "priority": priority}
+                fb, merged_ids = await intervention_handler.receive(str(task_id), feedback_item)
+
+                if fb is None:
+                    reason = "queue_full_or_empty"
+                    await websocket.send_json({
+                        "type": "intervention_rejected",
+                        "id": fb_id,
+                        "reason": reason,
+                    })
+                else:
+                    agent_status = ws_manager.get_agent_status(task_id)
+                    ack_msg = {
+                        "type": "intervention_ack",
+                        "id": fb.id,
+                        "priority": fb.priority,
+                        "agent_status": agent_status,
+                    }
+                    if merged_ids:
+                        ack_msg["merged"] = True
+                    await websocket.send_json(ack_msg)
+
+                    for mid in merged_ids:
+                        await websocket.send_json({
+                            "type": "intervention_applied",
+                            "id": mid,
+                            "merged_into": fb.id,
+                        })
+
+            elif msg_type == "retract":
+                fb_id = msg.get("feedback_id") or msg.get("payload", {}).get("feedback_id", "")
+                ok = await intervention_handler.retract(str(task_id), fb_id)
+                if not ok:
+                    await websocket.send_json({
+                        "type": "intervention_rejected",
+                        "id": fb_id,
+                        "reason": "already_injected",
+                    })
     except WebSocketDisconnect:
         ws_manager.disconnect(task_id)
 
@@ -946,7 +1006,7 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
     engine = _get_engine(agent_mode)
 
     async def generate():
-        yield f"data: {json.dumps({'type': 'start', 'mode': agent_mode})}\n\n"
+        yield f"data: {json.dumps({'type': 'start', 'mode': agent_mode, 'task_id': task_id})}\n\n"
 
         # 创建临时任务记录
         conn = get_db("agent")
@@ -972,8 +1032,17 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
 
             # 轮询步骤更新，推送给前端
             last_step = 0
+            last_event_idx = 0
             while not bg_task.done():
                 await asyncio.sleep(0.5)
+
+                # ── 干预事件推送（SSE）──
+                int_events, last_event_idx = await intervention_handler.poll_events(
+                    str(task_id), last_event_idx
+                )
+                for evt in int_events:
+                    yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+
                 conn = get_db("agent")
                 steps = conn.execute(
                     "SELECT * FROM agent_steps WHERE task_id = ? AND step_number > ? ORDER BY step_number",
@@ -1072,6 +1141,42 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )
+
+
+# ── 用户干预（Web 前端 SSE 模式下使用 HTTP POST）──────────────────
+
+@app.post("/api/agent/tasks/{task_id}/intervene")
+async def agent_intervene(task_id: int, body: dict, user: dict = Depends(get_current_user)):
+    """Web 前端通过 HTTP POST 发送干预反馈（SSE 模式下无 WebSocket）"""
+    fb_id = body.get("id", "")
+    content = body.get("content", "")
+    priority = body.get("priority", "normal")
+
+    if not fb_id or not content.strip():
+        raise HTTPException(400, "id and content are required")
+
+    fb, merged_ids = await intervention_handler.receive(str(task_id), {
+        "id": fb_id, "content": content, "priority": priority,
+    })
+
+    if fb is None:
+        return {"ok": False, "reason": "queue_full_or_empty"}
+
+    return {
+        "ok": True,
+        "feedback_id": fb.id,
+        "priority": fb.priority,
+        "merged_ids": merged_ids,
+    }
+
+@app.post("/api/agent/tasks/{task_id}/retract")
+async def agent_retract_intervention(task_id: int, body: dict, user: dict = Depends(get_current_user)):
+    """撤回尚未注入的反馈"""
+    fb_id = body.get("feedback_id", "")
+    if not fb_id:
+        raise HTTPException(400, "feedback_id is required")
+    ok = await intervention_handler.retract(str(task_id), fb_id)
+    return {"ok": ok}
 
 
 # ── 无状态聊天流式 (兼容前端直接传 messages 数组) ──────────────────

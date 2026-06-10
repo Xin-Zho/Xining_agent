@@ -21,6 +21,7 @@ import time
 
 from .tools import Tool
 from .websocket_manager import WebSocketManager, _save_step, _update_step, _update_task
+from .intervention import InterventionHandler
 from ..llm_client import estimate_tokens
 
 # Token 预算
@@ -85,11 +86,13 @@ STEP_TIMEOUT = 60
 class AgentEngine:
     """增强版 ReAct Agent — Token 预算 + 并行执行 + 自动反思"""
 
-    def __init__(self, deepseek, tools: list[Tool], ws_manager: WebSocketManager):
+    def __init__(self, deepseek, tools: list[Tool], ws_manager: WebSocketManager,
+                 intervention: InterventionHandler = None):
         self.deepseek = deepseek
         self.tools = tools
         self.tool_map = {t.name: t for t in tools}
         self.ws = ws_manager
+        self.intervention = intervention
         self._cancellations: set[int] = set()
         self._called_history: list[str] = []  # 防重复调用
         # 预计算工具描述（缓存优化：每次 call_llm 复用同一段文本，不重算）
@@ -103,6 +106,11 @@ class AgentEngine:
                   max_iterations: int = MAX_ITERATIONS):
         start_time = time.time()
         self._called_history = []
+        task_id_str = str(task_id)
+
+        # 生命周期：注册任务
+        if self.intervention:
+            await self.intervention.register_task(task_id_str)
 
         _update_task(task_id, status="executing")
 
@@ -132,6 +140,13 @@ class AgentEngine:
             for iteration in range(max_iterations):
                 # ── 取消检查 ──────────────────────────────
                 if task_id in self._cancellations:
+                    _update_task(task_id, status="cancelled")
+                    await self.ws.broadcast(task_id, "task_cancelled", {"task_id": task_id})
+                    self._cancellations.discard(task_id)
+                    return
+
+                # ── 取消快车道（WebSocket 干预取消）─────
+                if self.intervention and await self.intervention.has_cancellation(task_id_str):
                     _update_task(task_id, status="cancelled")
                     await self.ws.broadcast(task_id, "task_cancelled", {"task_id": task_id})
                     self._cancellations.discard(task_id)
@@ -173,6 +188,19 @@ class AgentEngine:
                 # ── 无工具调用 → 任务完成 ─────────────────
                 if not msg.tool_calls:
                     final_answer = msg.content or "任务已完成。"
+                    thought_content = msg.content or ""
+
+                    # 消化追踪
+                    if self.intervention:
+                        digest_events = await self.intervention.mark_digested(
+                            task_id_str, thought_content
+                        )
+                        for event in digest_events:
+                            await self.ws.broadcast(task_id, event["type"], {
+                                "id": event["id"],
+                                "decision": event["decision"],
+                                "summary": event["summary"],
+                            })
 
                     # 自动保存关键发现到长期记忆
                     try:
@@ -377,6 +405,17 @@ class AgentEngine:
 
                 step_number += len(call_tasks)
 
+                # ── 反馈注入点 ─────────────────────────
+                if self.intervention:
+                    fb_msgs, injected_ids = await self.intervention.drain(task_id_str)
+                    if fb_msgs:
+                        messages.extend(fb_msgs)
+                        for fb_id in injected_ids:
+                            await self.ws.broadcast(task_id, "intervention_applied", {
+                                "id": fb_id,
+                                "step_number": step_number,
+                            })
+
             # ── 达到最大轮次 ────────────────────────────
             messages.append({
                 "role": "user",
@@ -385,6 +424,18 @@ class AgentEngine:
             final_resp = await self._call_llm(messages, tool_schemas)
             final_answer = final_resp.choices[0].message.content or "任务达到最大执行轮数。"
             total_tokens += final_resp.usage.total_tokens if final_resp.usage else 0
+
+            # 消化追踪（最大轮次路径也需要）
+            if self.intervention:
+                digest_events = await self.intervention.mark_digested(
+                    task_id_str, final_answer
+                )
+                for event in digest_events:
+                    await self.ws.broadcast(task_id, event["type"], {
+                        "id": event["id"],
+                        "decision": event["decision"],
+                        "summary": event["summary"],
+                    })
 
             duration_ms = int((time.time() - start_time) * 1000)
             _update_task(task_id, status="completed", final_answer=final_answer,
@@ -405,6 +456,15 @@ class AgentEngine:
                 "error": str(e),
                 "last_step": step_number,
             })
+
+        finally:
+            # 生命周期：清理干预资源
+            if self.intervention:
+                pending_rejections = await self.intervention.complete_task(task_id_str)
+                for fb_id, reason in pending_rejections:
+                    await self.ws.broadcast(task_id, "intervention_rejected", {
+                        "id": fb_id, "reason": reason,
+                    })
 
     async def _reflect(self, user_question: str, answer: str) -> str:
         """自动反思：检查回答是否足够好。返回 'pass' 或改进建议。"""
