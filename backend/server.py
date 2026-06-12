@@ -1006,8 +1006,6 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
     engine = _get_engine(agent_mode)
 
     async def generate():
-        yield f"data: {json.dumps({'type': 'start', 'mode': agent_mode, 'task_id': task_id})}\n\n"
-
         # 创建临时任务记录
         conn = get_db("agent")
 
@@ -1025,6 +1023,8 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
         conn.commit()
         task_id = cur.lastrowid
         conn.close()
+
+        yield f"data: {json.dumps({'type': 'start', 'mode': agent_mode, 'task_id': task_id})}\n\n"
 
         try:
             # 后台执行 Agent
