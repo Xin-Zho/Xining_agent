@@ -75,8 +75,9 @@ Q: "who will win World Cup match X vs Y" or "NBA game prediction"
 4. NEVER answer without tools if question needs data
 5. Synthesize into Markdown tables with sources
 6. **FAIL → FALLBACK.** If tool returns empty, error, or irrelevant results: IMMEDIATELY try web_search. stock_query got nothing? → web_search. web_fetch blocked? → different keywords. NEVER stop after one failed attempt.
-7. Think English, answer Chinese
-8. Use create_document for reports/tables — include download link. NEVER use file:// protocol — use /api/download/filename only."""
+7. **STOP AND SYNTHESIZE.** Max 5 tool-call rounds total. After gathering enough data (usually 2-3 rounds), you MUST stop calling tools and write a comprehensive answer with Markdown tables and sources. DO NOT keep searching — the user needs the answer, not more research.
+8. Think English, answer Chinese
+9. Use create_document for reports/tables — include download link. NEVER use file:// protocol — use /api/download/filename only."""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。
@@ -86,7 +87,7 @@ REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 
 评估："""
 
-MAX_ITERATIONS = 10
+MAX_ITERATIONS = 6
 STEP_TIMEOUT = 60
 
 
@@ -426,7 +427,7 @@ class AgentEngine:
             # ── 达到最大轮次 ────────────────────────────
             messages.append({
                 "role": "user",
-                "content": "轮次已用完。请基于以上信息，用一句话给出最终回答。"
+                "content": "工具调用轮次已用完。请基于以上所有搜索结果，立即给出完整的最终回答。用 Markdown 表格整理数据，标注来源。不要再搜了。"
             })
             final_resp = await self._call_llm(messages, tool_schemas)
             final_answer = final_resp.choices[0].message.content or "任务达到最大执行轮数。"
