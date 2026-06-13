@@ -531,6 +531,9 @@ async def _stock_query(action: str = "top", market: str = "a", count: int = 10) 
                 "open": float(item.get("open", 0)),
                 "pre_close": float(item.get("settlement", 0)),
             })
+        if not data or len(stocks) == 0:
+            return {"error": "stock_query仅覆盖A股（沪深/科创/创业板）", "hint": "该股票不在A股范围。请立即改用 web_search 搜索美股/港股行情", "stocks": []}
+
 
         action_names = {"top": "涨幅榜", "down": "跌幅榜", "volume": "成交量榜"}
         return {

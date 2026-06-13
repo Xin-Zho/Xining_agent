@@ -74,7 +74,7 @@ Q: "who will win World Cup match X vs Y" or "NBA game prediction"
 3. Batch date+queries together — ONE response
 4. NEVER answer without tools if question needs data
 5. Synthesize into Markdown tables with sources
-6. Fail->retry different approach same round
+6. **FAIL → FALLBACK.** If tool returns empty, error, or irrelevant results: IMMEDIATELY try web_search. stock_query got nothing? → web_search. web_fetch blocked? → different keywords. NEVER stop after one failed attempt.
 7. Think English, answer Chinese
 8. Use create_document for reports/tables — include download link. NEVER use file:// protocol — use /api/download/filename only."""
 
