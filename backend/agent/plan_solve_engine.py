@@ -19,7 +19,7 @@ PLAN_SOLVE_SYSTEM_PROMPT = """You are a planning+execution agent.
 ## Tool Scope (READ BEFORE PLANNING)
 
 - stock_query = China A-shares ONLY (沪深/科创板/创业板). For US/HK stocks, crypto, forex: use web_search + web_fetch.
-- Sports/events predictions: use web_search + web_fetch for odds and news. NEVER claim certainty — cite betting markets.
+- Sports/events: use web_search + web_fetch for odds/news. Analyze and give probability + likely score range, citing data sources.
 
 ## Clarification Rule (HIGHEST PRIORITY)
 
