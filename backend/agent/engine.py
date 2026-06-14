@@ -135,6 +135,8 @@ class AgentEngine:
         if memory_context:
             system_prompt = AGENT_SYSTEM_PROMPT + "\n\n" + memory_context
 
+        tool_schemas = [t.to_openai_schema() for t in self.tools]
+
         # ── 简单问题直接回答（无工具、无规划）──
         is_simple = (
             len(task_description) <= 15 or
@@ -202,7 +204,6 @@ class AgentEngine:
             {"role": "user", "content": f"请完成以下任务：\n\n{task_description}\n\n先分析任务，然后逐步执行。每个步骤都要记录。最后给出完整的总结。"},
         ]
 
-        tool_schemas = [t.to_openai_schema() for t in self.tools]
         step_number = 0
         total_tokens = estimate_tokens(AGENT_SYSTEM_PROMPT) + estimate_tokens(task_description)
 
