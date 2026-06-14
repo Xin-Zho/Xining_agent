@@ -135,6 +135,40 @@ class AgentEngine:
         if memory_context:
             system_prompt = AGENT_SYSTEM_PROMPT + "\n\n" + memory_context
 
+        # ── 复杂度预判：简单问题直接回答 ──────────
+        check_messages = [
+            {"role": "system", "content": "Is this task complex (requires tools/multi-step)? Answer ONLY 'simple' or 'complex'."},
+            {"role": "user", "content": task_description},
+        ]
+        try:
+            check_resp = await self._call_llm(check_messages, None)
+            complexity = (check_resp.choices[0].message.content or "").strip().lower()
+        except Exception:
+            complexity = "complex"
+
+        if "simple" in complexity:
+            direct_messages = [
+                {"role": "system", "content": "You are a helpful assistant. Answer concisely in Chinese. For greetings/chit-chat, respond naturally. For factual questions, answer directly without tools unless absolutely necessary. Think English, answer Chinese."},
+                {"role": "user", "content": task_description},
+            ]
+            direct_resp = await self._call_llm(direct_messages, None)
+            total_tokens = (direct_resp.usage.total_tokens if direct_resp.usage else 0)
+            final_answer = direct_resp.choices[0].message.content or ""
+
+            duration_ms = int((time.time() - start_time) * 1000)
+            _update_task(task_id, status="completed", final_answer=final_answer,
+                         total_tokens=total_tokens, duration_ms=duration_ms)
+            await self.ws.broadcast(task_id, "task_complete", {
+                "final_answer": final_answer,
+                "total_steps": 1,
+                "total_tokens": total_tokens,
+                "duration_ms": duration_ms,
+            })
+            # 生命周期清理
+            if self.intervention:
+                await self.intervention.complete_task(task_id_str)
+            return
+
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"请完成以下任务：\n\n{task_description}\n\n先分析任务，然后逐步执行。每个步骤都要记录。最后给出完整的总结。"},
