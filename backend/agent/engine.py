@@ -135,25 +135,54 @@ class AgentEngine:
         if memory_context:
             system_prompt = AGENT_SYSTEM_PROMPT + "\n\n" + memory_context
 
-        # ── 复杂度预判：简单问题直接回答 ──────────
-        check_messages = [
-            {"role": "system", "content": "Is this task complex (requires tools/multi-step)? Answer ONLY 'simple' or 'complex'."},
-            {"role": "user", "content": task_description},
-        ]
-        try:
-            check_resp = await self._call_llm(check_messages, None)
-            complexity = (check_resp.choices[0].message.content or "").strip().lower()
-        except Exception:
-            complexity = "complex"
+        # ── 简单问题直接回答（无工具、无规划）──
+        is_simple = (
+            len(task_description) <= 15 or
+            any(w in task_description for w in ["你好", "谢谢", "再见", "哈哈", "嗯", "哦", "好", "OK", "Hi", "hi"])
+        )
+        if not is_simple:
+            # LLM 二次确认（仅对边界情况）
+            try:
+                check_resp = await self._call_llm([
+                    {"role": "system", "content": "Does this need tools/search/multi-step? Answer ONLY 'simple' or 'complex'."},
+                    {"role": "user", "content": task_description},
+                ], None)
+                is_simple = "simple" in (check_resp.choices[0].message.content or "").strip().lower()
+            except Exception:
+                pass
 
-        if "simple" in complexity:
+        if is_simple:
             direct_messages = [
-                {"role": "system", "content": "You are a helpful assistant. Answer concisely in Chinese. For greetings/chit-chat, respond naturally. For factual questions, answer directly without tools unless absolutely necessary. Think English, answer Chinese."},
+                {"role": "system", "content": "你是一个智能聊天助手。直接回答用户的问题，不要提'任务'或'完成'。用自然的口语。可以用工具查事实但要快。用中文回答。"},
                 {"role": "user", "content": task_description},
             ]
-            direct_resp = await self._call_llm(direct_messages, None)
+            direct_resp = await self._call_llm(direct_messages, tool_schemas if len(task_description) > 20 else None)
             total_tokens = (direct_resp.usage.total_tokens if direct_resp.usage else 0)
             final_answer = direct_resp.choices[0].message.content or ""
+
+            # 如果 LLM 调了工具，执行并追答
+            msg = direct_resp.choices[0].message
+            if msg.tool_calls:
+                for tc in msg.tool_calls[:2]:  # 最多2个工具
+                    tool = self.tool_map.get(tc.function.name)
+                    if tool:
+                        try:
+                            args = json.loads(tc.function.arguments)
+                        except json.JSONDecodeError:
+                            args = {}
+                        try:
+                            obs = await asyncio.wait_for(tool.handler(**args), timeout=STEP_TIMEOUT)
+                            obs_str = json.dumps(obs, ensure_ascii=False)[:2000]
+                            direct_messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}]})
+                            direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": obs_str})
+                        except Exception as e:
+                            direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"Error: {e}"})
+                final_resp = await self._call_llm(direct_messages, None)
+                total_tokens += (final_resp.usage.total_tokens if final_resp.usage else 0)
+                final_answer = final_resp.choices[0].message.content or final_answer
+
+            if not final_answer.strip():
+                final_answer = "你好！有什么可以帮你的？"
 
             duration_ms = int((time.time() - start_time) * 1000)
             _update_task(task_id, status="completed", final_answer=final_answer,
@@ -164,7 +193,6 @@ class AgentEngine:
                 "total_tokens": total_tokens,
                 "duration_ms": duration_ms,
             })
-            # 生命周期清理
             if self.intervention:
                 await self.intervention.complete_task(task_id_str)
             return
@@ -229,8 +257,15 @@ class AgentEngine:
 
                 # ── 无工具调用 → 任务完成 ─────────────────
                 if not msg.tool_calls:
-                    final_answer = msg.content or "任务已完成。"
+                    final_answer = msg.content or ""
                     thought_content = msg.content or ""
+
+                    # content 为空 → 让 LLM 基于历史总结回答
+                    if not final_answer.strip():
+                        messages.append({"role": "user", "content": "请基于以上所有搜索结果和对话历史，给出完整的最终回答。用中文。"})
+                        summary_resp = await self._call_llm(messages, None)
+                        total_tokens += summary_resp.usage.total_tokens if summary_resp.usage else 0
+                        final_answer = summary_resp.choices[0].message.content or "抱歉，未能完成此任务。请重新描述您的问题。"
 
                     # 消化追踪
                     if self.intervention:
