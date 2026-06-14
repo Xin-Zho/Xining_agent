@@ -165,6 +165,10 @@ class AgentEngine:
             except Exception:
                 is_simple = False  # 异常时走复杂路径保底
 
+        # 临时调试日志
+        import sys
+        print(f"[ENGINE] raw={raw_question!r} needs_tools={needs_tools} is_simple={is_simple}", file=sys.stderr, flush=True)
+
         if is_simple:
             direct_messages = [
                 {"role": "system", "content": "你是一个智能聊天助手。直接回答用户的问题，不要提'任务'或'完成'。用自然的口语。可以用工具查事实但要快。用中文回答。"},
