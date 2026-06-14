@@ -146,31 +146,26 @@ class AgentEngine:
             "天气", "新闻", "最新", "实时", "今天", "现在", "当前",
             "帮我写", "帮我做", "帮我查", "计算", "预测", "比较",
         ])
-        is_simple = (
-            not needs_tools and (
+        if needs_tools:
+            # 本地关键词命中 → 直接走复杂路径，不让 LLM 推翻
+            is_simple = False
+        else:
+            # 本地判为"可能简单"，LLM 二次确认
+            is_simple = (
                 len(raw_question) <= 15 or
                 any(w in raw_question for w in ["你好", "谢谢", "再见", "哈哈", "嗯", "哦", "好", "OK", "Hi", "hi"])
             )
-        )
-        if not is_simple:
-            # LLM 二次确认（仅对边界情况）
-            # 剥掉 SSE 包装的 "## 当前任务\n" 前缀，用原始用户问题判断
-            raw_question = task_description.split("## 当前任务\n")[-1] if "## 当前任务" in task_description else task_description
-            try:
-                check_resp = await self._call_llm([
-                    {"role": "system", "content": "Does this task require web_search, file operations, or external data? If yes → 'complex'. If pure conversation/knowledge question → 'simple'. Answer ONLY one word."},
-                    {"role": "user", "content": raw_question},
-                ], None)
-                is_simple = "simple" in (check_resp.choices[0].message.content or "").strip().lower()
-            except Exception:
-                is_simple = False  # 异常时走复杂路径保底
-
-        # 临时调试日志
-        try:
-            with open("/tmp/agent_debug.log", "a") as f:
-                f.write(f"[ENGINE] raw={raw_question!r} needs_tools={needs_tools} is_simple={is_simple}\n")
-        except:
-            pass
+            if not is_simple:
+                # 边界情况 → LLM 判断
+                raw_question2 = task_description.split("## 当前任务\n")[-1] if "## 当前任务" in task_description else task_description
+                try:
+                    check_resp = await self._call_llm([
+                        {"role": "system", "content": "Does this task require web_search, file operations, or external data? If yes → 'complex'. If pure conversation/knowledge question → 'simple'. Answer ONLY one word."},
+                        {"role": "user", "content": raw_question2},
+                    ], None)
+                    is_simple = "simple" in (check_resp.choices[0].message.content or "").strip().lower()
+                except Exception:
+                    is_simple = False
 
         if is_simple:
             direct_messages = [
