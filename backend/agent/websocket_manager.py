@@ -56,6 +56,7 @@ class WebSocketManager:
 def _save_step(task_id: int, step_number: int, step_type: str, status: str = "running",
                tool_name: str = None, tool_args: dict = None, thought: str = None):
     conn = get_db("agent")
+    # 注意：agent 相关表在 agent.db，不要混用 chat.db
     conn.execute(
         """INSERT INTO agent_steps (task_id, step_number, status, step_type, tool_name, tool_args, thought)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -75,7 +76,7 @@ def _update_step(
     duration_ms: int = None,
     tool_args: dict = None,
 ):
-    conn = get_db()
+    conn = get_db("agent")
     if tool_result is not None and tool_args is not None:
         conn.execute(
             """UPDATE agent_steps
@@ -104,7 +105,7 @@ def _update_step(
 
 
 def _update_task(task_id: int, **kwargs):
-    conn = get_db()
+    conn = get_db("agent")
     set_clause = ", ".join(f"{k} = ?" for k in kwargs)
     values = list(kwargs.values()) + [task_id]
     conn.execute(

@@ -1116,7 +1116,7 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
                     yield f"data: {json.dumps({'type': 'step', 'step': step_data})}\n\n"
 
             # Agent 完成
-            conn = get_db("chat")
+            conn = get_db("agent")
             task = conn.execute("SELECT * FROM agent_tasks WHERE id = ?", (task_id,)).fetchone()
             conn.close()
 
