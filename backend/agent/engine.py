@@ -138,16 +138,28 @@ class AgentEngine:
         tool_schemas = [t.to_openai_schema() for t in self.tools]
 
         # ── 简单问题直接回答（无工具、无规划）──
+        # 剥掉 SSE 包装前缀，用原始用户问题做判断
+        raw_question = task_description.split("## 当前任务\n")[-1] if "## 当前任务" in task_description else task_description
+        # 明确需要搜索/工具的关键词 → 不走简单路径
+        needs_tools = any(w in raw_question for w in [
+            "搜", "查", "找", "分析", "生成", "创建", "下载", "股票",
+            "天气", "新闻", "最新", "实时", "今天", "现在", "当前",
+            "帮我写", "帮我做", "帮我查", "计算", "预测", "比较",
+        ])
         is_simple = (
-            len(task_description) <= 15 or
-            any(w in task_description for w in ["你好", "谢谢", "再见", "哈哈", "嗯", "哦", "好", "OK", "Hi", "hi"])
+            not needs_tools and (
+                len(raw_question) <= 15 or
+                any(w in raw_question for w in ["你好", "谢谢", "再见", "哈哈", "嗯", "哦", "好", "OK", "Hi", "hi"])
+            )
         )
         if not is_simple:
             # LLM 二次确认（仅对边界情况）
+            # 剥掉 SSE 包装的 "## 当前任务\n" 前缀，用原始用户问题判断
+            raw_question = task_description.split("## 当前任务\n")[-1] if "## 当前任务" in task_description else task_description
             try:
                 check_resp = await self._call_llm([
-                    {"role": "system", "content": "Does this need tools/search/multi-step? Answer ONLY 'simple' or 'complex'."},
-                    {"role": "user", "content": task_description},
+                    {"role": "system", "content": "Does this task require web_search, file operations, or external data? If yes → 'complex'. If pure conversation/knowledge question → 'simple'. Answer ONLY one word."},
+                    {"role": "user", "content": raw_question},
                 ], None)
                 is_simple = "simple" in (check_resp.choices[0].message.content or "").strip().lower()
             except Exception:
@@ -156,9 +168,9 @@ class AgentEngine:
         if is_simple:
             direct_messages = [
                 {"role": "system", "content": "你是一个智能聊天助手。直接回答用户的问题，不要提'任务'或'完成'。用自然的口语。可以用工具查事实但要快。用中文回答。"},
-                {"role": "user", "content": task_description},
+                {"role": "user", "content": raw_question},
             ]
-            direct_resp = await self._call_llm(direct_messages, tool_schemas if len(task_description) > 20 else None)
+            direct_resp = await self._call_llm(direct_messages, tool_schemas if len(raw_question) > 20 else None)
             total_tokens = (direct_resp.usage.total_tokens if direct_resp.usage else 0)
             final_answer = direct_resp.choices[0].message.content or ""
 
