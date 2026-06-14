@@ -202,6 +202,16 @@ class AgentEngine:
             if not final_answer.strip():
                 final_answer = "你好！有什么可以帮你的？"
 
+            # 简单路径也保存记忆（过滤纯闲聊）
+            if len(final_answer) > 30 and not any(w == raw_question for w in ["你好", "谢谢", "再见", "OK", "Hi", "hi"]):
+                try:
+                    ltm = LongTermMemory(user_id)
+                    mem_key = raw_question[:50].replace("\n", " ").strip()
+                    mem_value = final_answer[:800]
+                    ltm.save(mem_key, mem_value)
+                except Exception:
+                    pass
+
             duration_ms = int((time.time() - start_time) * 1000)
             _update_task(task_id, status="completed", final_answer=final_answer,
                          total_tokens=total_tokens, duration_ms=duration_ms)
@@ -530,6 +540,16 @@ class AgentEngine:
                         "decision": event["decision"],
                         "summary": event["summary"],
                     })
+
+            # 自动保存到长期记忆
+            if len(final_answer) > 30:
+                try:
+                    ltm = LongTermMemory(user_id)
+                    mem_key = task_description[:50].replace("\n", " ").strip()
+                    mem_value = final_answer[:800]
+                    ltm.save(mem_key, mem_value)
+                except Exception:
+                    pass
 
             duration_ms = int((time.time() - start_time) * 1000)
             _update_task(task_id, status="completed", final_answer=final_answer,
