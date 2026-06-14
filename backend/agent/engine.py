@@ -163,7 +163,7 @@ class AgentEngine:
                 ], None)
                 is_simple = "simple" in (check_resp.choices[0].message.content or "").strip().lower()
             except Exception:
-                pass
+                is_simple = False  # 异常时走复杂路径保底
 
         if is_simple:
             direct_messages = [
