@@ -87,7 +87,7 @@ REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 
 评估："""
 
-MAX_ITERATIONS = 6
+MAX_ITERATIONS = 5
 STEP_TIMEOUT = 60
 
 
@@ -511,8 +511,8 @@ class AgentEngine:
                 "role": "user",
                 "content": "工具调用轮次已用完。请基于以上所有搜索结果，立即给出完整的最终回答。用 Markdown 表格整理数据，标注来源。不要再搜了。"
             })
-            final_resp = await self._call_llm(messages, tool_schemas)
-            final_answer = final_resp.choices[0].message.content or "任务达到最大执行轮数。"
+            final_resp = await self._call_llm(messages, None)  # 不给工具，强制总结
+            final_answer = final_resp.choices[0].message.content or "抱歉，未能完成此任务。请重新描述您的问题。"
             total_tokens += final_resp.usage.total_tokens if final_resp.usage else 0
 
             # 消化追踪（最大轮次路径也需要）
