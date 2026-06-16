@@ -13,7 +13,7 @@
 **原则**:
 - SQLite 不动，继续做账户/对话/任务/记忆原文的 source of truth
 - 零外部服务：ChromaDB 嵌入式运行，BGE 模型本地加载
-- 最少侵入：只改 3 个现有文件，新增 8 个文件
+- 最少侵入：只改 5 个现有文件（4 轻改 + 1 弃用），新增 8 个文件
 
 ---
 
@@ -56,8 +56,8 @@ class MemoryItem:
     last_accessed_at: float          # 最近检索时间
     access_count: int = 0            # 检索次数
     ttl: Optional[float] = None      # Working 过期时间
-    metadata: dict = {}              # 扩展字段
-    embedding: Optional[list[float]] # 向量缓存（仅 ChromaDB 存储）
+    metadata: dict = field(default_factory=dict)  # 扩展字段（避免可变默认参数陷阱）
+    embedding: Optional[list[float]] = None        # 向量缓存（仅 ChromaDB 存储）
 ```
 
 ### 3.2 MemoryConfig (base.py)
@@ -110,11 +110,13 @@ class BaseMemory(ABC):
 - **TTL**: 默认 30 分钟过期，惰性清理
 - **用途**: 当前任务上下文、工具结果、中间推理
 - **不持久化**，会话结束即清
+- **限制**: v1 限定单进程；多 worker / 重启部署场景下 working memory 会丢失。后续如需多进程共享，可接入 Redis 替代内存 dict
 
 ### 3.5 EpisodicMemory (episodic.py)
 
 - **存储**: SQLite(原文, source of truth) + ChromaDB Collection(向量)
 - **内容**: 每次 Agent 任务完成后的总结——做了什么、什么结果
+- **ChromaDB Collection 命名**: `episodic_all`（统一 collection，按 `user_id` metadata 过滤，避免 collection 数量随用户膨胀）
 - **检索公式**: `(向量相似度 × 0.8 + 时间近因性 × 0.2) × (0.8 + importance × 0.4)`
 - **遗忘**: importance < 0.3 且 7 天未访问 → 自动删除
 - **固化**: importance > 0.7 → consolidate 升级为 Semantic
@@ -123,7 +125,9 @@ class BaseMemory(ABC):
 
 - **存储**: SQLite(原文) + ChromaDB Collection(向量)
 - **内容**: 用户偏好、领域知识、从 Episodic 固化来的规则
-- **检索公式**: `(向量相似度 × 0.7 + 访问频率 × 0.1 + 重要性 × 0.2)`
+- **ChromaDB Collection 命名**: `semantic_all`（统一 collection，按 `user_id` metadata 过滤）
+- **检索公式**: `score = 0.7 × sim + 0.1 × freq_norm + 0.2 × importance`
+  - `freq_norm = min(access_count / 10.0, 1.0)`，防止访问次数整数盖过其他维度
 - **不自动遗忘**（不设 TTL），仅显式删除
 
 ### 3.7 MemoryManager (manager.py)
@@ -134,7 +138,8 @@ class BaseMemory(ABC):
 class MemoryManager:
     def __init__(self, user_id, config=MemoryConfig(), embedding=None)
     
-    async def add(content, memory_type, importance=None, metadata={}) -> str
+    async def add(content, memory_type, importance=None, metadata=None) -> str
+        # metadata: 传入 None 时内部初始化为 {}，避免可变默认参数陷阱
     async def search(query, memory_types=["episodic","semantic"], limit=5) -> list[MemoryItem]
     async def get_working_context() -> list[MemoryItem]
     async def consolidate(from_type="episodic", to_type="semantic", threshold=0.7)
@@ -258,8 +263,8 @@ CREATE TABLE IF NOT EXISTS episodic_memory (
     user_id INTEGER NOT NULL,
     content TEXT NOT NULL,
     importance REAL DEFAULT 0.5,
-    created_at REAL NOT NULL,
-    last_accessed_at REAL NOT NULL,
+    created_at REAL NOT NULL DEFAULT (unixepoch()),
+    last_accessed_at REAL NOT NULL DEFAULT (unixepoch()),
     access_count INTEGER DEFAULT 0,
     metadata TEXT DEFAULT '{}'
 );
@@ -270,8 +275,8 @@ CREATE TABLE IF NOT EXISTS semantic_memory (
     user_id INTEGER NOT NULL,
     content TEXT NOT NULL,
     importance REAL DEFAULT 0.5,
-    created_at REAL NOT NULL,
-    last_accessed_at REAL NOT NULL,
+    created_at REAL NOT NULL DEFAULT (unixepoch()),
+    last_accessed_at REAL NOT NULL DEFAULT (unixepoch()),
     access_count INTEGER DEFAULT 0,
     metadata TEXT DEFAULT '{}',
     source_episodic_id TEXT  -- 从哪条 Episodic 固化来的
@@ -279,7 +284,22 @@ CREATE TABLE IF NOT EXISTS semantic_memory (
 CREATE INDEX idx_semantic_user ON semantic_memory(user_id, created_at);
 ```
 
-### 6.2 旧 agent_memory 表
+### 6.2 ChromaDB Collection 命名（设计决策）
+
+**选方案 B**：统一 collection + metadata 过滤。
+
+| 方案 | 做法 | 优点 | 缺点 |
+|------|------|------|------|
+| A. 按用户分 | `episodic_user_{id}` | 隔离干净，删用户直接 drop | collection 数量随用户增长 |
+| **B. 统一 + 过滤** | `episodic_all`，`where user_id={id}` | 简单，不膨胀 | 需 metadata filtering（ChromaDB 支持） |
+
+实现方式：
+- 每个记忆类型只有一个 ChromaDB collection（`episodic_all` / `semantic_all`）
+- `MemoryItem` 写入时把 `user_id` 写入 ChromaDB metadata
+- 查询时加 `where={"user_id": user_id}` 过滤
+- embedding.py 不感知 collection 结构，只提供 `embed()` 方法
+
+### 6.3 旧 agent_memory 表
 
 保留不动。LongTermMemory 标记 deprecated，`get_context_for_prompt()` 内部委托给 MemoryManager.semantic。
 
@@ -294,8 +314,8 @@ CREATE INDEX idx_semantic_user ON semantic_memory(user_id, created_at);
 | `backend/agent/engine.py` | 轻改 | 用 MemoryManager + ContextBuilder 替代 LongTermMemory |
 | `backend/memory/long_term.py` | 弃用 | 保留文件，内部迁移到 SemanticMemory |
 | `backend/context_manager.py` | 废弃 | 逻辑迁移到 ContextBuilder |
-| `backend/database.py` | 不改 | 仅新增 episodic/semantic 表初始化 |
-| `backend/server.py` | 不改 | Memory API 保持兼容 |
+| `backend/database.py` | 轻改 | 新增 episodic/semantic 表初始化 |
+| `backend/server.py` | 轻改 | `/api/memory` 路由从 LongTermMemory 切换到 MemoryManager，保持接口签名兼容 |
 
 ---
 
@@ -311,5 +331,11 @@ CREATE INDEX idx_semantic_user ON semantic_memory(user_id, created_at);
 
 - [x] 无占位符或 TODO
 - [x] 内部一致：三种记忆类型接口统一继承 BaseMemory
-- [x] 范围可控：8 新文件 + 3 轻改，无外部服务依赖
+- [x] ChromaDB Collection 命名方案已明确（方案 B：统一 collection + metadata 过滤）
+- [x] 检索评分已归一化（access_count 封顶 1.0）
+- [x] SQL 表 last_accessed_at 已加 DEFAULT (unixepoch())
+- [x] Python 可变默认参数已修正（field(default_factory=dict), metadata=None）
+- [x] WorkingMemory 单进程限制已文档化
+- [x] server.py /api/memory 路由迁移已纳入变更清单
+- [x] 范围可控：8 新文件 + 5 改文件，无外部服务依赖
 - [x] 要求明确：MemoryItem 字段、评分公式、TTL 策略均已指定
