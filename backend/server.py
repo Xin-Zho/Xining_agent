@@ -81,6 +81,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Security headers middleware
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Cache-Control"] = "no-cache"
+    # Static files get long cache
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
 # ── Mount routers ──────────────────────────────────────────────────────
 
 from .routes.auth import router as auth_router
