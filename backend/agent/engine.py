@@ -150,7 +150,10 @@ class AgentEngine:
                 except Exception:
                     is_simple = False
 
+        print(f"[ENGINE] is_simple={is_simple} raw_question='{raw_question[:80]}' task_id={task_id}", flush=True)
+
         if is_simple:
+            print(f"[ENGINE] Taking SIMPLE path for task {task_id}", flush=True)
             direct_messages = [
                 {"role": "system", "content": "你是一个智能聊天助手。直接回答用户的问题，不要提'任务'或'完成'。用自然的口语。可以用工具查事实但要快。用中文回答。"},
                 {"role": "user", "content": raw_question},
@@ -210,6 +213,7 @@ class AgentEngine:
                 await self.intervention.complete_task(task_id_str)
             return
 
+        print(f"[ENGINE] Taking COMPLEX path for task {task_id}, system_prompt_len={len(system_prompt)}", flush=True)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"请完成以下任务：\n\n{task_description}\n\n先分析任务，然后逐步执行。每个步骤都要记录。最后给出完整的总结。"},
