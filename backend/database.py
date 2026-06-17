@@ -110,3 +110,33 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_downloads_user ON downloads(user_id, created_at);
     """)
     m.commit(); m.close()
+
+    # memory.db — episodic + semantic tables (NEW)
+    m2 = get_db("memory")
+    m2.executescript("""
+        CREATE TABLE IF NOT EXISTS episodic_memory (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            importance REAL DEFAULT 0.5,
+            created_at REAL NOT NULL DEFAULT (unixepoch()),
+            last_accessed_at REAL NOT NULL DEFAULT (unixepoch()),
+            access_count INTEGER DEFAULT 0,
+            metadata TEXT DEFAULT '{}'
+        );
+        CREATE INDEX IF NOT EXISTS idx_episodic_user ON episodic_memory(user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS semantic_memory (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            importance REAL DEFAULT 0.5,
+            created_at REAL NOT NULL DEFAULT (unixepoch()),
+            last_accessed_at REAL NOT NULL DEFAULT (unixepoch()),
+            access_count INTEGER DEFAULT 0,
+            metadata TEXT DEFAULT '{}',
+            source_episodic_id TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_semantic_user ON semantic_memory(user_id, created_at);
+    """)
+    m2.commit(); m2.close()
