@@ -131,10 +131,14 @@ async function sendMessage() {
   }
   msgs = msgs.concat(conv.messages.slice(-40));
 
+  // Route: Agent mode → /api/agent/stream, 对话 mode → /api/chat/stream
+  var mode = App.agentMode || 'react';
+  var url = mode === 'normal' ? '/api/chat/stream' : '/api/agent/stream';
+
   // Send
   currentAbort = new AbortController();
   try {
-    await streamRequest('/api/agent/stream', msgs, conv);
+    await streamRequest(url, msgs, conv, mode);
   } catch (e) {
     if (e.name !== 'AbortError') {
       U.toast('连接失败: '+e.message, 'error');
@@ -147,11 +151,16 @@ async function sendMessage() {
   App.saveConvs();
 }
 
-async function streamRequest(url, msgs, conv) {
+async function streamRequest(url, msgs, conv, mode) {
+  var body = { messages: msgs };
+  if (url === '/api/agent/stream') {
+    body.model = 'chat';
+    body.mode = mode || 'react';
+  }
   var resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type':'application/json', 'Authorization':'Bearer '+App.userToken },
-    body: JSON.stringify({ messages:msgs, model:App.selectedModel||'chat', mode:App.agentMode||'react' }),
+    body: JSON.stringify(body),
     signal: currentAbort.signal,
   });
   if (!resp.ok) throw new Error('HTTP '+resp.status);

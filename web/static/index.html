@@ -37,10 +37,6 @@
     </div>
     <div class="sidebar-footer">
       <span id="sidebarUser">用户</span>
-      <select onchange="App.onModelChange()" id="modelSelect" title="模型选择">
-        <option value="chat">⚡ 快速</option>
-        <option value="reasoner">🧠 深度</option>
-      </select>
       <select onchange="App.onFontSizeChange()" id="fontSizeSelect" title="字体大小">
         <option value="normal">A</option>
         <option value="large">A+</option>
@@ -60,12 +56,10 @@
       <button class="hamburger" onclick="App.toggleSidebar()">☰</button>
       <span class="title">Xin</span>
       <span class="badge active" id="agentBadge" style="display:none">Agent</span>
-      <span class="badge" id="modelBadge" style="display:none">快速</span>
       <span id="headerSub" style="font-size:12px;color:var(--slate-5)"></span>
-      <select onchange="App.onAgentModeChange()" id="modeSelect" title="Agent 模式" style="margin-left:auto">
-        <option value="react">Agent</option>
-        <option value="plan_solve">专家</option>
-        <option value="normal">对话</option>
+      <select onchange="App.onAgentModeChange()" id="modeSelect" title="运行模式" style="margin-left:auto;font-weight:600">
+        <option value="react">🤖 Agent</option>
+        <option value="normal">💬 对话</option>
       </select>
     </div>
 

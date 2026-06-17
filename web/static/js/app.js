@@ -11,7 +11,6 @@ var conversations = [];
 var currentConvId = null;
 var agents = [];
 var currentAgentId = null;
-var selectedModel = 'chat';
 var agentMode = 'react';
 
 // ── Default agents ──────────────────────────────────────
@@ -173,13 +172,6 @@ function deleteAgent(id) {
 }
 
 // ── Settings ────────────────────────────────────────────
-function onModelChange() {
-  selectedModel = document.getElementById('modelSelect').value;
-  var badge = document.getElementById('modelBadge');
-  badge.style.display = 'inline-block';
-  badge.textContent = selectedModel === 'reasoner' ? '深度' : '快速';
-}
-
 function onFontSizeChange() {
   var v = document.getElementById('fontSizeSelect').value;
   document.body.classList.toggle('text-large', v === 'large');
@@ -240,13 +232,12 @@ return {
   get currentConvId() { return currentConvId; }, set currentConvId(v) { currentConvId = v; },
   get agents() { return agents; }, set agents(v) { agents = v; },
   get currentAgentId() { return currentAgentId; },
-  get selectedModel() { return selectedModel; },
   get agentMode() { return agentMode; },
   renderSidebar:renderSidebar, selectAgent:selectAgent,
   switchConv:switchConv, newConversation:newConversation, deleteConv:deleteConv,
   openAgentModal:openAgentModal, closeAgentModal:closeAgentModal,
   saveAgent:saveAgent, deleteAgent:deleteAgent,
-  onModelChange:onModelChange, onFontSizeChange:onFontSizeChange,
+  onFontSizeChange:onFontSizeChange,
   onAgentModeChange:onAgentModeChange,
   toggleSidebar:toggleSidebar, closeSidebar:closeSidebar,
   loadConvs:loadConvs, saveConvs:saveConvs,
