@@ -87,9 +87,13 @@ function renderMarkdown(text) {
   html = html.replace(/^\- (.+)$/gm, '<li>$1</li>');
   html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
 
-  // Links
+  // Links — inject auth token for download links
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_, text, url) {
-    return '<a href="'+esc(url)+'" target="_blank" rel="noopener">'+esc(text)+'</a>';
+    var href = esc(url);
+    if (href.indexOf('/api/download/') >= 0 && window.App && window.App.userToken) {
+      href += (href.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(window.App.userToken);
+    }
+    return '<a href="'+href+'" target="_blank" rel="noopener">'+esc(text)+'</a>';
   });
 
   // Bare URLs

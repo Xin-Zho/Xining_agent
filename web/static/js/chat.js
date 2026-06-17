@@ -237,6 +237,25 @@ function handleSSEEvent(ev, conv, bubble, fullReply) {
       Agent.showRetrySuccess(ev);
       break;
 
+    case 'file_created':
+      // Show prominent download card
+      (function(){
+        var d = document.createElement('div');
+        d.className = 'step download-card';
+        var token = App.userToken;
+        var dlUrl = ev.download_url + (ev.download_url.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(token);
+        d.innerHTML = '<strong>📥 文件已生成</strong>' +
+          '<div style="margin-top:6px"><a href="'+U.esc(dlUrl)+'" target="_blank" style="color:var(--accent);font-weight:600;font-size:15px">' +
+          '📄 '+U.esc(ev.filename||'下载')+'</a>' +
+          (ev.size_bytes ? ' <span style="font-size:12px;color:var(--slate-5)">('+ (ev.size_bytes > 1024 ? (ev.size_bytes/1024).toFixed(0)+'KB' : ev.size_bytes+'B') +')</span>' : '') +
+          '</div>';
+        var msgs = document.getElementById('messages');
+        var bubble = document.getElementById('streamingBubble');
+        if (bubble) { msgs.insertBefore(d, bubble); }
+        else { msgs.appendChild(d); }
+      })();
+      break;
+
     case 'plan':
       if (ev.steps) {
         var html = '<div class="step plan"><strong>📋 执行计划</strong><ol style="margin:4px 0 0 16px">';

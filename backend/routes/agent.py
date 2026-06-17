@@ -306,6 +306,13 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
                                         obs_text = inner_parsed["output"][:500]
                                     elif "error" in inner_parsed:
                                         obs_text = f"❌ {inner_parsed['error']}"
+                                    elif "clickable_link" in inner_parsed or "download_url" in inner_parsed:
+                                        # Document/excel created → show download link prominently
+                                        dl_url = inner_parsed.get("download_url", "")
+                                        fname = inner_parsed.get("filename", "")
+                                        obs_text = inner_parsed.get("clickable_link", f"📥 下载 {fname}: {dl_url}")
+                                        # Emit file_created event for prominent UI card
+                                        yield f"data: {json.dumps({'type': 'file_created', 'filename': fname, 'download_url': dl_url, 'size_bytes': inner_parsed.get('size_bytes', 0)})}\n\n"
                                     else:
                                         obs_text = inner[:500]
                                 except (json.JSONDecodeError, TypeError):
