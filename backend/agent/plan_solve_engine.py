@@ -60,6 +60,11 @@ class PlanSolveEngine:
         start_time = time.time()
         _update_task(task_id, status="planning")
 
+        # 注入记忆上下文
+        from ..memory.manager import MemoryManager
+        mem_mgr = MemoryManager(user_id)
+        self._mem_mgr = mem_mgr
+
         await self.ws.broadcast(task_id, "task_started", {
             "task_id": task_id,
             "title": task_description[:50],
@@ -338,6 +343,17 @@ class PlanSolveEngine:
             summary_resp = await self._call_llm(summary_messages)
             total_tokens += summary_resp.usage.total_tokens if summary_resp.usage else 0
             final_answer = summary_resp.choices[0].message.content or "Task completed."
+
+            # 保存任务总结到情景记忆
+            try:
+                await self._mem_mgr.add(
+                    content=f"Plan-Solve任务: {task_description[:80]}\n结论: {final_answer[:300]}",
+                    memory_type="episodic",
+                    importance=0.5,
+                    metadata={"task_id": task_id, "mode": "plan_solve"},
+                )
+            except Exception:
+                pass
 
             duration_ms = int((time.time() - start_time) * 1000)
             _update_task(task_id, status="completed", final_answer=final_answer,
