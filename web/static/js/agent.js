@@ -90,7 +90,9 @@ function renderStep(ev) {
   var empty = document.getElementById('emptyState');
   if (empty) empty.remove();
 
-  var stype = ev.step_type || ev.type || '';
+  // Step type is nested: {type: "step", step: {type: "tool_call", ...}}
+  var step = ev.step || ev;
+  var stype = step.type || ev.step_type || '';
   var div = document.createElement('div');
   div.className = 'step ' + stype;
 
@@ -98,40 +100,41 @@ function renderStep(ev) {
   var bubble = document.getElementById('streamingBubble');
 
   if (stype === 'tool_call') {
-    var tool = ev.tool_name || '';
+    var tool = step.tool_name || '';
     var tagClass = U.toolTagClass(tool);
-    var time = U.formatDuration(ev.duration_ms);
-    var argsStr = typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args||{}, null, 2);
-    var resultStr = typeof ev.result === 'string' ? ev.result : JSON.stringify(ev.result||ev.observation||{}, null, 2);
+    var time = U.formatDuration(step.duration_ms);
+    var argsStr = typeof step.tool_args === 'string' ? step.tool_args : JSON.stringify(step.tool_args||{}, null, 2);
+    var resultStr = step.observation || '';
 
     div.innerHTML =
       '<div class="tool-header">'+
         '<span class="tool-tag '+tagClass+'">🔧 '+U.esc(tool)+'</span>'+
         (time ? '<span class="tool-time">⏱ '+time+'</span>' : '')+
       '</div>'+
-      '<div class="tool-args" onclick="var c=this.querySelector(\'.tool-args-content\');c.classList.toggle(\'show\');var t=this.querySelector(\'.toggle\');t.textContent=c.classList.contains(\'show\')?\'▲ 收起\':\'▶ 展开\'">'+
+      (argsStr && argsStr !== '{}' ?
+        '<div class="tool-args" onclick="var c=this.querySelector(\'.tool-args-content\');c.classList.toggle(\'show\');var t=this.querySelector(\'.toggle\');t.textContent=c.classList.contains(\'show\')?\'▲ 收起\':\'▶ 展开\'">'+
         '参数 <span class="toggle">▶ 展开</span>'+
         '<div class="tool-args-content"><pre style="margin:4px 0;font-size:11px">'+U.esc(argsStr.slice(0,500))+'</pre></div>'+
-      '</div>'+
-      (resultStr && resultStr !== '{}' ?
+        '</div>' : '')+
+      (resultStr ?
         '<div class="tool-result">'+U.renderMarkdown(resultStr.slice(0,500))+'</div>' : '');
 
-    if (ev.status === 'failed' || (ev.result && typeof ev.result === 'string' && ev.result.includes('error'))) {
+    if (step.status === 'failed' || (resultStr && resultStr.indexOf('error') >= 0)) {
       div.style.borderColor = 'var(--danger)';
       div.style.background = '#FEF2F2';
     }
   } else if (stype === 'thought') {
-    var thought = ev.thought || ev.message || ev.content || '';
+    var thought = step.thought || '';
     div.innerHTML = '<strong>💡 思考</strong><div style="margin-top:4px">'+U.renderMarkdown(thought.slice(0,500))+'</div>';
   } else if (stype === 'plan') {
-    div.innerHTML = '<strong>📋 规划</strong><div style="margin-top:4px">'+U.renderMarkdown((ev.plan||'').slice(0,500))+'</div>';
+    div.innerHTML = '<strong>📋 规划</strong><div style="margin-top:4px">'+U.renderMarkdown((step.plan||'').slice(0,500))+'</div>';
   } else if (stype === 'review') {
     div.className = 'step review';
     var parts = [];
-    if (ev.missing_steps && ev.missing_steps.length) parts.push('<span style="color:var(--danger)">⚠ 缺失步骤: '+ev.missing_steps.length+'</span>');
-    if (ev.flawed_logic && ev.flawed_logic.length) parts.push('<span style="color:var(--warning)">⚠ 逻辑缺陷: '+ev.flawed_logic.length+'</span>');
-    if (ev.boundary_gaps && ev.boundary_gaps.length) parts.push('<span style="color:var(--info)">⚠ 边界缺口: '+ev.boundary_gaps.length+'</span>');
-    if (ev.suggestions && ev.suggestions.length) parts.push('<span>💡 建议: '+ev.suggestions.length+' 条</span>');
+    if (step.missing_steps && step.missing_steps.length) parts.push('<span style="color:var(--danger)">⚠ 缺失步骤: '+step.missing_steps.length+'</span>');
+    if (step.flawed_logic && step.flawed_logic.length) parts.push('<span style="color:var(--warning)">⚠ 逻辑缺陷: '+step.flawed_logic.length+'</span>');
+    if (step.boundary_gaps && step.boundary_gaps.length) parts.push('<span style="color:var(--info)">⚠ 边界缺口: '+step.boundary_gaps.length+'</span>');
+    if (step.suggestions && step.suggestions.length) parts.push('<span>💡 建议: '+step.suggestions.length+' 条</span>');
     div.innerHTML = '<strong>🔍 审查结果</strong><div style="margin-top:4px">'+parts.join(' &middot; ')+'</div>';
   } else {
     div.innerHTML = '<strong>'+U.esc(stype)+'</strong>';

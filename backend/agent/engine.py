@@ -233,6 +233,7 @@ class AgentEngine:
 
                 # ── 思考步骤 ───────────────────────────────
                 step_number += 1
+                self._current_step_num = step_number
                 _save_step(task_id, step_number, "thought", status="running",
                            thought=f"第{iteration + 1}轮思考...")
 

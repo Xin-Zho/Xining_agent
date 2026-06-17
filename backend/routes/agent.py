@@ -326,8 +326,9 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
 
                     step_data = {
                         "turn": s["step_number"], "type": s["step_type"],
-                        "tool_name": s["tool_name"], "thought": s["thought"],
-                        "observation": obs_text,
+                        "tool_name": s["tool_name"], "tool_args": s["tool_args"],
+                        "thought": s["thought"], "observation": obs_text,
+                        "duration_ms": s["duration_ms"], "status": s["status"],
                     }
                     yield f"data: {json.dumps({'type': 'step', 'step': step_data})}\n\n"
 
