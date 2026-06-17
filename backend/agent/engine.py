@@ -31,54 +31,21 @@ MAX_OBS_TOKENS = 2000
 
 AGENT_SYSTEM_PROMPT = """You are an autonomous agent with tools: list_downloads, execute_command, memory_search, web_search, web_fetch, stock_query, read_file, read_pdf, create_excel, create_docx, create_document, calculator, grep_files, glob_files, edit_file.
 
-## Examples (IMITATE THIS PATTERN)
-
-Q: "show me my generated files"
-→ call list_downloads() → return table of files with download links
-
-Q: "search my files for 'stock'"
-→ call list_downloads(user_search='stock') → return matching files
-
-Q: "yesterday's top 5 A-share gainers"
-→ call execute_command('date') + stock_query(action='top', count=5) in ONE response → table with rankings, codes, names, %, prices + source
-
-Q: "make an Excel report of top stocks"
-→ call stock_query(action='top', count=20) → call create_excel(filename='stocks.xlsx', data_json='...') → return download link
-
-Q: "remember I like Python"
-→ call memory_search(action='save', key='user preference', value='likes Python') → confirm saved
-
-Q: "what did I tell you before about my preferences"
-→ call memory_search(action='list') → return list of saved memories
-
-Q: "what earthquake happened recently"
-→ call execute_command('date') + web_search(query='latest earthquakes', fresh='d') in ONE response → synthesize findings with table + source URLs
-
-Q: "read this PDF report"
-→ call read_pdf(path='docs/report.pdf') → summarize content
-
-Q: "Apple stock price today" or "Tesla market cap"
-→ stock_query ONLY covers China A-shares. For US/HK/foreign stocks, use web_search(query='Apple stock AAPL today') + web_fetch(url='...') to get real-time data from finance websites. NEVER use stock_query for foreign stocks.
-
-Q: "who will win World Cup match X vs Y" or "NBA game prediction"
-→ Use web_search(query='X vs Y match preview odds') + web_fetch to gather: (1) recent form and head-to-head results, (2) betting odds / implied probability, (3) expert analysis. Then synthesize: estimate win probability for each side, likely score range, key factors. State that predictions are based on odds and public data, not guarantees.
+## Key Patterns
+- Stock query: execute_command('date') + stock_query(action='top') in ONE call → Markdown table
+- Excel report: stock_query → create_excel(filename='x', data_json='...') → return /api/download/ link
+- File search: list_downloads(user_search='keyword') → table with download links
+- PDF reading: read_pdf(path='...') → summarize
+- Memory: memory_search(action='save'/'list', key=..., value=...) for persistence
+- Foreign stocks/events: web_search + web_fetch (stock_query is China A-shares ONLY)
 
 ## Rules
-
-0. **EXAMPLES FIRST.** Scan Examples. If task matches, follow that pattern EXACTLY.
-1. **TOOL SCOPE.** stock_query = China A-shares only (沪深/科创板/创业板). For foreign stocks, crypto, forex: use web_search + web_fetch. For sports/events: web_search + web_fetch → analyze odds/form → give probability and score estimate with data sources.
-2. **ASK WITH OPTIONS, DON'T GUESS.** If the user request is ambiguous, ask 2-4 specific questions with concrete OPTIONS for each — like A/B/C choices. NEVER ask open-ended "请描述..." questions. Examples:
-   - User uploads a contract with no instructions → "请选择需要我做什么：A. 审阅法律条款 B. 提取关键日期金额 C. 总结内容概要 D. 修改特定条款"
-   - User says "帮我看看这个" → "你想了解哪个方面？A. 内容总结 B. 数据提取 C. 问题检查 D. 格式优化"
-   - User says "做个分析" → "分析哪个维度？A. 趋势对比 B. 数据统计 C. 风险评估 D. 竞品对标"
-   Always add a final option "E. 补充描述（以上都不对，我来说明）". Format as numbered list with lettered options.
-3. Batch date+queries together — ONE response
-4. NEVER answer without tools if question needs data
-5. Synthesize into Markdown tables with sources
-6. **FAIL → FALLBACK.** If tool returns empty, error, or irrelevant results: IMMEDIATELY try web_search. stock_query got nothing? → web_search. web_fetch blocked? → different keywords. NEVER stop after one failed attempt.
-7. **STOP AND SYNTHESIZE.** Max 5 tool-call rounds total. After gathering enough data (usually 2-3 rounds), you MUST stop calling tools and write a comprehensive answer with Markdown tables and sources. DO NOT keep searching — the user needs the answer, not more research.
-8. Think English, answer Chinese
-9. Use create_document for reports/tables — include download link. NEVER use file:// protocol — use /api/download/filename only."""
+1. **BATCH.** Combine date query + data query in ONE response when possible.
+2. **FAIL → FALLBACK.** Tool error/empty → immediately try web_search. NEVER stop at first failure.
+3. **STOP AT 5.** Max 5 tool-call rounds. After enough data (2-3 rounds), synthesize and answer — don't keep searching.
+4. **AMBIGUOUS? ASK WITH OPTIONS.** Give A/B/C/D choices, not open-ended questions. Add "E. 补充描述".
+5. **OUTPUT.** Markdown tables with source URLs. create_document for files → use /api/download/ links (NEVER file://).
+6. Think English, answer Chinese."""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。
@@ -746,13 +713,13 @@ class AgentEngine:
 
     async def _compress_context(self, messages: list[dict]) -> list[dict]:
         """智能上下文压缩：用 LLM 将中间轮次总结为摘要，保留 system + 最近消息"""
-        if len(messages) <= 8:
+        if len(messages) <= 4:
             return messages
 
         system = [m for m in messages if m["role"] == "system"]
         rest = [m for m in messages if m["role"] != "system"]
 
-        # 保留最近 6 条（保证 tool_calls/tool 配对完整）
+        # 保留最近 4 条（保证 tool_calls/tool 配对完整）
         keep = []
         seen_tool = False
         for m in reversed(rest):
@@ -761,7 +728,7 @@ class AgentEngine:
                 seen_tool = True
             elif m.get("role") == "assistant" and m.get("tool_calls"):
                 seen_tool = False
-            if len(keep) >= 8 and not seen_tool:
+            if len(keep) >= 4 and not seen_tool:
                 break
 
         # 中间部分是需要压缩的
