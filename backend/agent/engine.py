@@ -257,6 +257,7 @@ class AgentEngine:
                 total_tokens += response.usage.total_tokens if response.usage else 0
 
                 msg = response.choices[0].message
+                logger.info(f"LLM response: content='{msg.content}' tool_calls={len(msg.tool_calls) if msg.tool_calls else 0}")
 
                 # 记录 LLM 思考
                 if msg.content:
