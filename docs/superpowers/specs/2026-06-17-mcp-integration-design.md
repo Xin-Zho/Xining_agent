@@ -575,7 +575,7 @@ class MCPTool:
 **_create_docx._table 状态泄漏修复**：将 `_create_docx._table` 函数属性改为局部变量 `table_data: list = []`，在函数内创建并在 finally 块中清理，确保异常退出时状态不残留。
 
 ```python
-async def handle_create_docx(filename: str, data_md: str, ..., _user_id: int = 0) -> dict:
+async def handle_create_docx(filename: str, data_md: str, ..., _meta: dict = None) -> dict:
     table_data: list = []  # 局部变量，替代函数属性
     try:
         ...
@@ -784,7 +784,7 @@ mcp~=1.9.0          # Anthropic 官方 MCP Python SDK（锁定 minor 版本）
 1. **`_create_docx._table` 函数属性** → 迁移到 MCP Server 时改为局部变量 + finally 清理
 2. **`stock_query` SSRF 防护** → MCP Server 版本添加 URL 白名单检查
 3. **`tools.py` 保留安全函数** → `_sanitize_url`、`_is_public_url`、`_safe_path`、`_validate_command` 等作为共享模块被 Server import
-4. **`_record_download`** → 保留在 `tools.py`，由 document_server 在文件生成成功后调用（或作为独立共享函数）
+4. **`_record_download`** → 保留在 `tools.py`，由 `MCPTool.handler()` 主进程侧后处理调用（见 §4.4），不进入 MCP Server 子进程
 5. **确认流程** → 引擎侧拦截（`_execute_tool` 方法），不进入 MCP Server
 6. **Server 入口** → 每个 Server 文件顶层读取 `AGENT_PROJECT_ROOT` 环境变量，失败时 raise RuntimeError
 
