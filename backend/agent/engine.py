@@ -118,6 +118,8 @@ class AgentEngine:
             "帮我写", "帮我做", "帮我查", "计算", "预测", "比较",
             "世界杯", "球赛", "比分", "谁会赢", "比赛", "走势",
             "推荐", "评测", "攻略", "教程", "价格", "多少钱",
+            "A股", "涨幅", "跌", "行情", "Excel", "excel", "表格",
+            "报告", "文档", "数据", "排名", "列表", "整理",
         ])
         if needs_tools:
             # 本地关键词命中 → 直接走复杂路径，不让 LLM 推翻
@@ -373,6 +375,7 @@ class AgentEngine:
                     if arguments.get("__blocked__"):
                         continue
                     sn = step_number + 1 + i
+                    self._current_step_num = sn
 
                     _save_step(task_id, sn, "tool_call", status="running",
                                tool_name=tool_name, tool_args=arguments)

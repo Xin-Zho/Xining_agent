@@ -156,13 +156,13 @@ async def chat_stream(req: dict | ChatRequest, authorization: str | None = Heade
                 delta = chunk.choices[0].delta
                 if delta.content:
                     full_reply += delta.content
-                    yield f"data: {json.dumps({'token': delta.content})}\n\n"
+                    yield f"data: {json.dumps({'type': 'token', 'token': delta.content})}\n\n"
 
             dialogue_logger.log(
                 user="anonymous", question=user_msg[:200], answer=full_reply[:2000],
                 source="chat", model=model_id,
             )
-            yield f"data: {json.dumps({'done': True, 'full_reply': full_reply})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'done': True, 'full_reply': full_reply})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
@@ -279,12 +279,12 @@ async def chat_stream_legacy(req: LegacyChatRequest):
                 delta = chunk.choices[0].delta
                 if delta.content:
                     full_reply += delta.content
-                    yield f"data: {json.dumps({'token': delta.content})}\n\n"
+                    yield f"data: {json.dumps({'type': 'token', 'token': delta.content})}\n\n"
             dialogue_logger.log(
                 user="anonymous", question=str(req.messages[-1].get("content", ""))[:200],
                 answer=full_reply[:2000], source="chat", model=model_id,
             )
-            yield f"data: {json.dumps({'done': True, 'full_reply': full_reply, 'token_info': token_info})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'done': True, 'full_reply': full_reply, 'token_info': token_info})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
