@@ -1,13 +1,15 @@
 """
-长期记忆 — SQLite 持久化，跨会话保留关键信息
-
-用法：
-    ltm = LongTermMemory(user_id=1)
-    ltm.save("用户偏好", "喜欢用 Python")
-    result = ltm.get("用户偏好")
-    keys = ltm.list_keys()
-    results = ltm.search("Python")
+[DEPRECATED] 长期记忆 — 已迁移到 SemanticMemory。
+保留此文件仅为向后兼容。新代码请使用:
+    from backend.memory import MemoryManager
+    mgr = MemoryManager(user_id)
 """
+import warnings
+warnings.warn(
+    "LongTermMemory is deprecated. Use MemoryManager with SemanticMemory instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 from datetime import datetime, timezone
 
 from ..database import get_db

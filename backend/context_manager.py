@@ -1,10 +1,9 @@
 """
-Context 窗口管理 — 防止消息过长超出模型限制
-
-三层策略：
-  1. Token 估算（简单字符换算法）
-  2. 超限警告
-  3. 自动摘要压缩（调 LLM 把旧消息压成一段）
+[DEPRECATED] Context 窗口管理 — 已迁移到 ContextBuilder。
+保留此文件仅为向后兼容。新代码请使用:
+    from backend.memory import ContextBuilder
+    cb = ContextBuilder()
+    msgs = cb.build(system, memories, history, task)
 
 DeepSeek 上下文窗口：chat=128K, reasoner=128K
 """
