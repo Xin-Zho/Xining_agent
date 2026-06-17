@@ -32,23 +32,28 @@ from ..evaluation.hooks import on_task_completed
 TOKEN_BUDGET = 90_000
 MAX_OBS_TOKENS = 2000
 
-AGENT_SYSTEM_PROMPT = """You are an autonomous agent with tools: list_downloads, execute_command, memory_search, web_search, web_fetch, stock_query, read_file, read_pdf, create_excel, create_docx, create_document, calculator, grep_files, glob_files, edit_file.
+AGENT_SYSTEM_PROMPT = """You are an AI agent. You MUST use the provided function tools to answer. NEVER describe what tools you would use — actually call them via function calling.
 
-## Key Patterns
-- Stock query: execute_command('date') + stock_query(action='top') in ONE call → Markdown table
-- Excel report: stock_query → create_excel(filename='x', data_json='...') → return /api/download/ link
-- File search: list_downloads(user_search='keyword') → table with download links
-- PDF reading: read_pdf(path='...') → summarize
-- Memory: memory_search(action='save'/'list', key=..., value=...) for persistence
-- Foreign stocks/events: web_search + web_fetch (stock_query is China A-shares ONLY)
+## When to use which tool
+- stock_query: China A-shares ONLY (沪深/科创板/创业板). action='top' for gainers, 'down' for losers, 'volume' for volume
+- web_search + web_fetch: foreign stocks, crypto, forex, news, events, real-time data
+- create_excel: generate .xlsx files. Return the /api/download/ link.
+- create_document: generate .md/.csv/.html files. Return the /api/download/ link.
+- list_downloads: show user their generated files
+- memory_search: save/recall user preferences (action='save'/'list')
+- read_pdf: extract text from PDFs
+- execute_command: date, ls, cat, find, grep — safe read-only commands only
+- calculator: math calculations
+- grep_files, glob_files, read_file: search and read project files
+- edit_file: edit project files
 
 ## Rules
-1. **BATCH.** Combine date query + data query in ONE response when possible.
-2. **FAIL → FALLBACK.** Tool error/empty → immediately try web_search. NEVER stop at first failure.
-3. **STOP AT 5.** Max 5 tool-call rounds. After enough data (2-3 rounds), synthesize and answer — don't keep searching.
-4. **AMBIGUOUS? ASK WITH OPTIONS.** Give A/B/C/D choices, not open-ended questions. Add "E. 补充描述".
-5. **OUTPUT.** Markdown tables with source URLs. create_document for files → use /api/download/ links (NEVER file://).
-6. Think English, answer Chinese."""
+1. CALL tools via function calling — do NOT write tool calls as text or code blocks.
+2. Batch multiple independent tool calls in ONE response.
+3. If a tool fails or returns empty, immediately try web_search as fallback.
+4. Max 5 rounds of tool calls. After 2-3 rounds, synthesize the data and write your final answer.
+5. Final answer: Markdown tables with source URLs. Download links use /api/download/ format.
+6. Think in English, answer in Chinese."""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。
@@ -556,16 +561,9 @@ class AgentEngine:
             return "pass"
 
     async def _call_llm(self, messages: list[dict], tools: list[dict] = None):
-        # 稳定前缀 = system_prompt + tool_desc（固定不变）→ DeepSeek 自动缓存命中
-        cached_messages = list(messages)
-        if tools and self._tool_desc:
-            # 只在原消息还没有 tool_desc 时插入（避免 _compress_context 导致的重复）
-            if len(cached_messages) < 2 or cached_messages[1].get("content", "")[:6] != "Tools:":
-                cached_messages.insert(1, {"role": "system", "content": self._tool_desc})
-
         kwargs = {
             "model": "deepseek-chat",
-            "messages": cached_messages,
+            "messages": messages,
             "temperature": 0.7,
             "max_tokens": 4096,
         }
@@ -585,11 +583,6 @@ class AgentEngine:
         """
         from openai import OpenAI
 
-        cached_messages = list(messages)
-        if tools and self._tool_desc:
-            if len(cached_messages) < 2 or cached_messages[1].get("content", "")[:6] != "Tools:":
-                cached_messages.insert(1, {"role": "system", "content": self._tool_desc})
-
         task_id = getattr(self, '_current_task_id', 0)
         should_stream = task_id > 0
 
@@ -604,7 +597,7 @@ class AgentEngine:
 
         kwargs = {
             "model": "deepseek-chat",
-            "messages": cached_messages,
+            "messages": messages,
             "temperature": 0.7,
             "max_tokens": 4096,
             "stream": True,
