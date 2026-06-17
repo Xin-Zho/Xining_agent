@@ -2,6 +2,12 @@
 LocalEmbedding — BGE 模型本地加载，text → 512-dim 归一化向量
 零外部 API 依赖，首次使用自动下载模型 (~100MB)，后续从缓存加载。
 """
+import os
+
+# 中国大陆服务器无法直接访问 huggingface.co，使用镜像
+_HF_MIRROR = os.environ.get("HF_ENDPOINT", "https://hf-mirror.com")
+if "HF_ENDPOINT" not in os.environ:
+    os.environ["HF_ENDPOINT"] = _HF_MIRROR
 
 
 class LocalEmbedding:
