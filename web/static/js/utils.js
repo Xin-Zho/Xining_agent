@@ -4,7 +4,7 @@
 window.Utils = (function() {
 
 // ── Storage ───────────────────────────────────────────
-function skey(k) { return 'agent_'+username+'_'+k; }
+function skey(k) { return 'agent_'+(window.App&&App.username?App.username:localStorage.getItem('agent_user')||'default')+'_'+k; }
 function lsave(k,v) { try{localStorage.setItem(skey(k),JSON.stringify(v))}catch(e){} }
 function lload(k) { try{var v=localStorage.getItem(skey(k));return v?JSON.parse(v):null}catch(e){return null} }
 function genId() { return 'x'+Date.now()+Math.random().toString(36).slice(2,8); }

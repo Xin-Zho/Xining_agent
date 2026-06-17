@@ -1,0 +1,7 @@
+{
+  "model": "",
+  "allowed_tools": "",
+  "permission_mode": "bypassPermissions",
+  "append_system_prompt": "",
+  "extra_dirs": []
+}

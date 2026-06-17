@@ -38,6 +38,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from fastapi.responses import RedirectResponse
+
 from .database import init_db
 from .dependencies import (
     PROJECT_ROOT, STATIC_DIR, deepseek, tool_registry, mcp_manager, ws_manager,
@@ -114,6 +116,14 @@ app.include_router(memory_router)
 app.include_router(downloads_router)
 app.include_router(logs_router)
 app.include_router(eval_router)
+
+
+# ── Root redirect ───────────────────────────────────────────────────────
+
+@app.get("/")
+async def root():
+    return RedirectResponse(url="/app")
+
 
 # ── Static files mount ─────────────────────────────────────────────────
 

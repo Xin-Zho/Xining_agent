@@ -56,6 +56,7 @@ async function handleAuth() {
       body: JSON.stringify(isLoginMode ? { username: user, password: pass } : { username: user, password: pass, invite_code: code }),
     });
     var data = await resp.json();
+    console.log('Auth response:', resp.status, data);
 
     if (resp.ok && (data.token || data.access_token)) {
       var token = data.token || data.access_token;
@@ -65,10 +66,11 @@ async function handleAuth() {
       localStorage.setItem('agent_user', user);
       showChatPage();
     } else {
-      errEl.textContent = data.error || data.detail || (isLoginMode ? '登录失败' : '注册失败');
+      errEl.textContent = data.error || data.detail || (isLoginMode ? '登录失败 ('+resp.status+')' : '注册失败 ('+resp.status+')');
     }
   } catch (e) {
-    errEl.textContent = '网络错误，请检查连接后重试';
+    console.error('Auth error:', e);
+    errEl.textContent = '网络错误：'+e.message;
   } finally {
     btn.classList.remove('loading');
     btn.disabled = false;
