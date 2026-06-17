@@ -780,21 +780,24 @@ def set_current_user(user_id: int):
     _current_user_id.set(user_id)
 
 async def _memory_search(query: str = "", action: str = "search", key: str = "", value: str = "") -> dict:
-    """搜索/保存/列出长期记忆，跨会话保留。用户偏好、历史结论、项目上下文。"""
-    from ..memory.long_term import LongTermMemory
-    ltm = LongTermMemory(user_id=_current_user_id.get())
+    """搜索/保存/列出跨会话记忆。支持三层记忆（working/episodic/semantic）。"""
+    from ..memory.manager import MemoryManager
+    mgr = MemoryManager(user_id=_current_user_id.get())
+
     if action == "save" and key and value:
-        ltm.save(key, value)
-        return {"action": "save", "key": key, "value": value[:200], "status": "saved"}
+        mid = await mgr.add(content=f"{key}: {value}", memory_type="semantic", importance=0.7)
+        return {"action": "save", "key": key, "value": value[:200], "memory_id": mid, "status": "saved"}
+
     elif action == "list":
-        memories = ltm.list_all()
-        return {"action": "list", "memories": memories, "count": len(memories)}
+        items = await mgr.search(query="", memory_types=["episodic", "semantic"], limit=10)
+        return {"action": "list", "memories": [i.to_dict() for i in items], "count": len(items)}
+
     else:  # search
         if not query:
-            memories = ltm.list_all()[:5]
+            items = await mgr.search(query="", memory_types=["episodic", "semantic"], limit=5)
         else:
-            memories = ltm.search(query)[:5]
-        return {"action": "search", "query": query, "memories": memories, "count": len(memories)}
+            items = await mgr.search(query=query, memory_types=["episodic", "semantic"], limit=5)
+        return {"action": "search", "query": query, "memories": [i.to_dict() for i in items], "count": len(items)}
 
 
 # ── 文件生成工具 ──────────────────────────────────────────────────────────
