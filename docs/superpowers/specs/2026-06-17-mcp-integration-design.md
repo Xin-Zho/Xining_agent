@@ -3,7 +3,7 @@
 > 日期：2026-06-17
 > 状态：设计确认，待实现
 > 关联文档：[技术路线图](../tech-roadmap.md)
-> 上次 Review：2026-06-17（P0/P1/P2 共 15 条，全部修正）
+> 上次 Review：2026-06-17（P0×5 + P1×6 + P2×4，全部修正）+ 二次 Review（P1-NEW×4，全部修正）
 
 ---
 
@@ -59,28 +59,41 @@ MCP Server 是独立子进程，不能访问主进程的内存状态。以下数
 | `downloads_dir` | `os.path.dirname(...)` + `"web/static/downloads"` | 同上，路径层数变了 | §4.2 — 从 `AGENT_PROJECT_ROOT` 推导 |
 | `agent.db` 连接 | `get_db("agent")` 共享连接 | 多进程并发写 SQLite | §4.3 — WAL mode |
 
-### 4.1 user_id 传递
+### 4.1 user_id 传递（通过 MCP `_meta`）
+
+MCP 协议的 `CallToolRequest` 有两个通道：
+
+- `arguments`：必须匹配工具的 `inputSchema`（JSON Schema），SDK 会校验
+- `_meta`：元数据通道，不参与 schema 校验，专门用于传递上下文
+
+`_user_id` **不能**放在 `arguments` 中——它不在工具的 `inputSchema` 里，MCP SDK ≥1.9.0 会拒绝未知字段。
 
 ```python
 # MCPClientManager（主进程侧）
 class MCPClientManager:
-    async def call_tool(self, server_name: str, tool_name: str, args: dict) -> dict:
+    async def call_tool(self, server_name: str, tool_name: str,
+                        arguments: dict) -> dict:
         # 在主进程读取 ContextVar（这里是有效的）
         user_id = _current_user_id.get()
-        # 注入到工具参数中
-        args_with_context = {**args, "_user_id": user_id}
-        return await self._sessions[server_name].call_tool(tool_name, args_with_context)
+        session = self._pick_session(server_name, tool_name)
+        async with self._session_locks[server_name][session["idx"]]:
+            result = await session["session"].call_tool(
+                tool_name,
+                arguments=arguments,               # 只传 LLM 生成的参数
+                _meta={"user_id": user_id},         # 上下文走 _meta
+            )
+            return result
 
 # MCP Server 侧（子进程）
-# 每个工具的 handler 签名统一接受 _user_id 参数
+# handler 通过 _meta 参数接收 user_id
 async def handle_memory_search(action: str, key: str = "", value: str = "",
-                               limit: int = 10, _user_id: int = 0) -> dict:
-    # 使用 _user_id 进行数据库操作
+                               limit: int = 10, _meta: dict = None) -> dict:
+    user_id = (_meta or {}).get("user_id", 0)
     conn = get_db("agent")
     ...
 ```
 
-`_user_id` 作为每个 MCP 工具参数的隐式字段，由 MCPClientManager 自动注入，对 LLM 不可见（不在 `to_openai_schema()` 的 parameters 中暴露）。
+`_user_id` 对 LLM 不可见（不在 `inputSchema` / OpenAPI `parameters` 中）、对 MCP schema 校验不可见、对协议完全合法。
 
 ### 4.2 环境变量：PROJECT_ROOT 和路径派生
 
@@ -138,6 +151,45 @@ WAL mode 特性：
 - 适合本项目的读写混合场景
 
 `database.py` 中 `get_db()` 每次调用都创建新的 sqlite3 连接（当前已经是这样），配合 WAL mode 即可安全跨进程访问。
+
+### 4.4 数据库写操作归主进程（_record_download 问题）
+
+`_record_download` 内部读取 `_current_user_id.get()` 并向 `agent.db` 的 `downloads` 表插入记录。在 MCP Server 子进程中，ContextVar 为默认值 0，记录会错写 user_id。
+
+**解决方案（方案 A）**：DB 写操作归主进程。MCP Server 只做纯工具逻辑，返回结果中携带操作元数据。主进程的 `MCPTool.handler()` 在拿到结果后执行 DB 写入。
+
+```
+document_server (子进程)                    MCPTool.handler (主进程)
+  │                                           │
+  ├── create_excel(filename, data)            │
+  ├── 写入文件系统                              │
+  ├── return {                                 │
+  │     "status": "success",                   │
+  │     "file": "stocks.xlsx",                 │
+  │     "_download_info": {                     │  ← 元数据，不是工具返回值
+  │         "filename": "stocks.xlsx",          │
+  │         "size": 12345,                      │
+  │         "user_id": 0   ← Server 不设        │
+  │     }                                      │
+  │   }                                        │
+  └───────────────────────────────────────────>│
+                                               ├── 拿到 result
+                                               ├── if "_download_info" in result:
+                                               │     _record_download(user_id, info)
+                                               │     ← 主进程 ContextVar 有效 ✅
+                                               ├── del result["_download_info"]
+                                               └── return result  (干净的，跟原来一样)
+```
+
+`_download_info` 是内部门协议字段——MCP Server 返回它，`MCPTool.handler()` 消费它并移除它，LLM 永远看不到。
+
+需要在主进程侧后处理的类似操作：
+- `_record_download` → 由 document_server 的 MCPTool handler 处理
+- `memory_search(action="save", ...)` → 写到 `agent.db` 的 memory 表
+  - 但 memory_search 本来就是 MCP Server 内的工具，需要访问 ChromaDB/SQLite
+  - 它们不走 `_record_download`，有自己的 `_user_id` 从 `_meta` 获取——见 §4.1
+
+总结：**DB 读操作**可以在 MCP Server 内完成（带 `_meta.user_id`），**DB 写操作**尽量归主进程后处理。
 
 ## 5. 架构
 
@@ -249,9 +301,9 @@ class MCPServerConfig:
 class MCPClientManager:
     """管理 6 个 MCP Server 的 stdio 连接。
 
-    每个 Server 维护一个 session（stdio transport）。
-    同一 Server 的多次 call_tool 调用在 session 内串行执行。
-    对于高并发 Server（network），可在配置中指定 session_count=2。
+    每个 Server 维护 1-N 个 session（支持并发）。
+    每个 session 有自己的 Lock——不同 session 可真正并行执行。
+    session_count > 1 可实现同 Server 内多个工具并发调用。
     """
 
     def __init__(self, project_root: str):
@@ -283,8 +335,8 @@ class MCPClientManager:
                 env={"AGENT_PROJECT_ROOT": project_root},
             ),
         }
-        self._sessions: dict[str, list[ClientSession]] = {}
-        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._sessions: dict[str, list[dict]] = {}      # {server: [{session, idx}]}
+        self._session_locks: dict[str, list[asyncio.Lock]] = {}  # 每个 session 一把锁
 
     async def connect_all(self):
         """并行启动所有 MCP Server 子进程，建立 stdio 连接"""
@@ -296,38 +348,44 @@ class MCPClientManager:
     async def _connect_server(self, name: str, config: MCPServerConfig):
         count = getattr(config, 'session_count', 1)
         sessions = []
-        for _ in range(count):
-            # 使用 mcp SDK 的 stdio_client
+        locks = []
+        for i in range(count):
             session = await create_stdio_session(config.cmd, config.env)
-            sessions.append(session)
+            sessions.append({"session": session, "idx": i})
+            locks.append(asyncio.Lock())
         self._sessions[name] = sessions
-        self._session_locks[name] = asyncio.Lock()
+        self._session_locks[name] = locks
 
-    async def call_tool(self, server_name: str, tool_name: str, args: dict) -> dict:
-        """调用指定 Server 的工具。
-        
-        自动注入 _user_id（从主进程 ContextVar 读取）。
-        同一 Server 内的多次调用串行执行（按 session index 轮转）。
-        """
-        # 注入跨进程上下文
-        args_with_context = {**args, "_user_id": _current_user_id.get()}
-
+    def _pick_session(self, server_name: str, tool_name: str) -> dict:
+        """按 tool_name hash 轮转选择 session，返回 {session, idx}"""
         sessions = self._sessions[server_name]
-        # 轮转选择 session（如果有多个）
-        session_idx = hash(tool_name) % len(sessions)
-        session = sessions[session_idx]
+        idx = hash(tool_name) % len(sessions)
+        return sessions[idx]
 
-        async with self._session_locks[server_name]:
+    async def call_tool(self, server_name: str, tool_name: str, arguments: dict) -> dict:
+        """调用指定 Server 的工具。
+
+        自动注入 _user_id（从主进程 ContextVar 读取，走 _meta 通道）。
+        同一 session 内的调用串行（用该 session 的 Lock），不同 session 可并发。
+        """
+        session_entry = self._pick_session(server_name, tool_name)
+        session = session_entry["session"]
+        session_idx = session_entry["idx"]
+
+        async with self._session_locks[server_name][session_idx]:
             try:
                 result = await asyncio.wait_for(
-                    session.call_tool(tool_name, args_with_context),
+                    session.call_tool(
+                        tool_name,
+                        arguments=arguments,
+                        _meta={"user_id": _current_user_id.get()},
+                    ),
                     timeout=STEP_TIMEOUT,  # 60s 总超时
                 )
                 return result
             except asyncio.TimeoutError:
                 raise MCPToolTimeout(f"{server_name}/{tool_name} timed out")
             except Exception as e:
-                # per-call 健康检查：标记为不可用，触发降级
                 self._mark_unavailable(server_name, tool_name)
                 raise MCPServerUnavailable(f"{server_name}/{tool_name}: {e}")
 
@@ -363,11 +421,17 @@ class MCPTool:
     async def handler(self, **kwargs) -> dict:
         """调用 MCP Server 的工具。
         
-        注意：确认检查在引擎侧完成（见 §7.1），这里不再重复。
+        确认检查在引擎侧完成（见 §7.1），这里不再重复。
+        结果后处理（如 _record_download）在主进程侧完成。
         """
-        return await self._client_manager.call_tool(
+        result = await self._client_manager.call_tool(
             self.server_name, self.name, kwargs
         )
+        # 主进程侧后处理：_download_info 消费
+        if "_download_info" in result:
+            user_id = _current_user_id.get()
+            _record_download(user_id, result.pop("_download_info"))
+        return result
 
     def to_openai_schema(self) -> dict:
         """与 Tool.to_openai_schema() 返回结构完全一致"""
@@ -409,12 +473,13 @@ class MCPTool:
         │
         └── MCPTool:
               await handler(**args)
-                → MCPClientManager.call_tool(server, name, args)
-                  → 注入 _user_id
+                → MCPClientManager.call_tool(server, name, arguments)  # 注入 _meta.user_id
                   → stdio → MCP Server 子进程
                     → 读取 AGENT_PROJECT_ROOT 环境变量
                     → 执行实际逻辑（访问文件/网络/数据库）
-                    → 返回结果
+                    → 返回结果（含 _download_info 等元数据）
+                → 主进程后处理：消费 _download_info → _record_download()
+                → 返回干净结果给引擎
 ```
 
 ## 6. 每个 MCP Server 详情
@@ -549,11 +614,11 @@ mcp_manager = MCPClientManager(project_root=PROJECT_ROOT)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    await mcp_manager.connect_all()
-    await tool_registry.initialize(mcp_manager)
+    # Startup — 顺序关键：先注册本地工具，再初始化 MCP（initialize 会 freeze registry）
     tool_registry.register_local(Tool("calculator", ...))
     tool_registry.register_local(Tool("timer_set", ...))
+    await mcp_manager.connect_all()
+    await tool_registry.initialize(mcp_manager)  # 发现 MCP 工具 → _frozen = True
     yield
     # Shutdown
     await tool_registry.shutdown()
@@ -708,7 +773,7 @@ mcp~=1.9.0          # Anthropic 官方 MCP Python SDK（锁定 minor 版本）
 | MCP Server 启动慢 | lifespan 中 `asyncio.gather` 并行启动 6 个进程 |
 | 子进程崩溃 | per-call 健康检查 + get_all_tools() 时自动重连 |
 | stdio 通信开销 | JSON-RPC over stdout/stdin，额外开销 < 1ms |
-| 同一 Server 多次调用串行阻塞 | network Server 设 session_count=2；未来可按需扩展 |
+| 同一 Server 多次调用 | session_count 控制并发度（network=2，其余=1）；未来可按需扩展 |
 | SQLite 多进程写冲突 | WAL mode + busy_timeout=5000ms |
 | mcp SDK 版本不稳定 | 锁定 `~=1.9.0`，minor 版本内 API 兼容 |
 | 跨平台差异（Windows stdio） | mcp SDK 已处理；Windows 是开发环境，充分测试 |
@@ -730,4 +795,4 @@ mcp~=1.9.0          # Anthropic 官方 MCP Python SDK（锁定 minor 版本）
 | 日期 | 内容 | 作者 |
 |------|------|------|
 | 2026-06-17 | 初始版本 | Xin-Zho + Claude |
-| 2026-06-17 | Review v2：修正 P0(5) + P1(6) + P2(4) 共 15 条 | Xin-Zho + Claude |
+| 2026-06-17 | Review v3：修正 P1-NEW×4 — per-session lock、_meta 传 user_id、_record_download 归主进程、lifespan 顺序修复 | Xin-Zho + Claude |
