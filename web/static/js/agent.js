@@ -155,7 +155,7 @@ function confirmTool(approved) {
 }
 
 return {
-  streamTaskId:streamTaskId,
+  get streamTaskId() { return streamTaskId; }, set streamTaskId(v) { streamTaskId = v; },
   showThinkingStream:showThinkingStream,
   appendThinking:appendThinking,
   finishThinking:finishThinking,

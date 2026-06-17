@@ -57,10 +57,11 @@ async function handleAuth() {
     });
     var data = await resp.json();
 
-    if (resp.ok && data.access_token) {
-      App.userToken = data.access_token;
+    if (resp.ok && (data.token || data.access_token)) {
+      var token = data.token || data.access_token;
+      App.userToken = token;
       App.username = user;
-      localStorage.setItem('agent_token', data.access_token);
+      localStorage.setItem('agent_token', token);
       localStorage.setItem('agent_user', user);
       showChatPage();
     } else {
