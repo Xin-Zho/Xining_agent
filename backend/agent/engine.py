@@ -17,7 +17,10 @@
 """
 import asyncio
 import json
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 
 from ..protocols.mcp.tool_adapter import ToolProtocol
 from .websocket_manager import WebSocketManager, _save_step, _update_step, _update_task
@@ -609,48 +612,48 @@ class AgentEngine:
         if tools:
             kwargs["tools"] = tools
 
-        # 在 executor 中运行同步流式调用
-        loop = asyncio.get_event_loop()
-        stream = await loop.run_in_executor(
-            None,
-            lambda: self.deepseek.chat.completions.create(**kwargs),
-        )
+        # 在 executor 中运行整个流式调用（避免阻塞 event loop）
+        async def _stream_and_collect():
+            loop = asyncio.get_event_loop()
+            content_parts = []
+            tool_call_chunks: dict[int, dict] = {}
+            total_tokens = 0
 
-        # 累积流式结果
-        content_parts = []
-        tool_call_chunks: dict[int, dict] = {}
-        total_tokens = 0
+            def _sync_stream():
+                nonlocal total_tokens
+                stream = self.deepseek.chat.completions.create(**kwargs)
+                for chunk in stream:
+                    if hasattr(chunk, 'usage') and chunk.usage:
+                        total_tokens = getattr(chunk.usage, 'total_tokens', 0)
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if not delta:
+                        continue
+                    if delta.content:
+                        content_parts.append(delta.content)
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tool_call_chunks:
+                                tool_call_chunks[idx] = {"id": "", "function_name": "", "function_args": ""}
+                            if tc_delta.id:
+                                tool_call_chunks[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    tool_call_chunks[idx]["function_name"] += tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    tool_call_chunks[idx]["function_args"] += tc_delta.function.arguments
+                return content_parts, tool_call_chunks, total_tokens
 
-        for chunk in stream:
-            if hasattr(chunk, 'usage') and chunk.usage:
-                total_tokens = getattr(chunk.usage, 'total_tokens', 0)
+            result = await loop.run_in_executor(None, _sync_stream)
+            return result
 
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if not delta:
-                continue
-
-            # 思考文本 → 推送到前端
-            if delta.content:
-                content_parts.append(delta.content)
-                await self.ws.broadcast(task_id, "thinking_delta", {
-                    "delta": delta.content,
-                })
-
-            # 累积 tool_calls
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in tool_call_chunks:
-                        tool_call_chunks[idx] = {
-                            "id": "", "function_name": "", "function_args": ""
-                        }
-                    if tc_delta.id:
-                        tool_call_chunks[idx]["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            tool_call_chunks[idx]["function_name"] += tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            tool_call_chunks[idx]["function_args"] += tc_delta.function.arguments
+        try:
+            content_parts, tool_call_chunks, total_tokens = await asyncio.wait_for(
+                _stream_and_collect(), timeout=120.0
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"LLM streaming timed out after 120s for task {task_id}")
+            raise Exception("LLM call timed out after 120 seconds")
 
         thinking_text = "".join(content_parts)
         await self.ws.broadcast(task_id, "thinking_end", {
