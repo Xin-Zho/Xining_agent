@@ -109,9 +109,10 @@
     <div class="eval-body" id="evalWeaknesses" hidden></div>
     <div class="eval-body" id="evalRecommendations" hidden></div>
   </div>
+</div>
 
-  <!-- Auth Page -->
-  <div id="authPage">
+<!-- Auth Page — MUST be outside #app so it's visible when #app is hidden -->
+<div id="authPage">
     <div class="auth-card">
       <h1 id="authTitle">登录</h1>
       <div class="sub" id="authSubtitle">欢迎回来</div>
@@ -128,7 +129,6 @@
       </div>
     </div>
   </div>
-</div>
 
 <!-- Agent Modal -->
 <div class="modal-overlay" id="agentModalOverlay" onclick="if(event.target===this)App.closeAgentModal()">
