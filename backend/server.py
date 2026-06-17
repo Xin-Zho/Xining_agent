@@ -91,6 +91,7 @@ from .routes.websocket import router as ws_router
 from .routes.memory import router as memory_router
 from .routes.downloads import router as downloads_router
 from .routes.logs import router as logs_router
+from .evaluation.router import router as eval_router
 
 app.include_router(auth_router)
 app.include_router(chat_router)
@@ -100,6 +101,7 @@ app.include_router(ws_router)
 app.include_router(memory_router)
 app.include_router(downloads_router)
 app.include_router(logs_router)
+app.include_router(eval_router)
 
 # ── Static files mount ─────────────────────────────────────────────────
 

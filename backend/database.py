@@ -140,3 +140,7 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_semantic_user ON semantic_memory(user_id, created_at);
     """)
     m2.commit(); m2.close()
+
+    # evaluation.db 表（task_evaluations + eval_aggregates + task_feedback）
+    from .evaluation.db import init_eval_db
+    init_eval_db()

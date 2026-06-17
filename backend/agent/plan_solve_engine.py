@@ -9,10 +9,11 @@ import json
 import re
 import time
 
-from .tools import Tool
+from ..protocols.mcp.tool_adapter import ToolProtocol
 from .websocket_manager import WebSocketManager, _save_step, _update_step, _update_task
 from .review_prompt import REVIEW_SYSTEM_PROMPT
 from ..llm_client import estimate_tokens
+from ..evaluation.hooks import on_task_completed
 
 PLAN_SOLVE_SYSTEM_PROMPT = """You are a planning+execution agent.
 
@@ -44,7 +45,7 @@ Think English, answer Chinese. Use tools, cite sources."""
 class PlanSolveEngine:
     """Plan-and-Solve：对复杂任务先列计划，再逐步执行"""
 
-    def __init__(self, deepseek, tools: list[Tool], ws_manager: WebSocketManager):
+    def __init__(self, deepseek, tools: list[ToolProtocol], ws_manager: WebSocketManager):
         self.deepseek = deepseek
         self.tools = tools
         self.tool_map = {t.name: t for t in tools}
@@ -366,6 +367,7 @@ class PlanSolveEngine:
                 "total_tokens": total_tokens,
                 "duration_ms": duration_ms,
             })
+            asyncio.create_task(on_task_completed(task_id))
 
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
@@ -376,6 +378,7 @@ class PlanSolveEngine:
                 "error": str(e),
                 "last_step": step_number,
             })
+            asyncio.create_task(on_task_completed(task_id))
 
     async def _call_llm(self, messages: list[dict], tools: list[dict] = None):
         cached_messages = list(messages)

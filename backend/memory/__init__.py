@@ -3,7 +3,7 @@ from .base import MemoryItem, MemoryConfig, MemoryType, BaseMemory
 from .manager import MemoryManager
 from .context import ContextBuilder
 from .embedding import LocalEmbedding
-from .long_term import LongTermMemory  # deprecated, kept for compatibility
+
 
 __all__ = [
     "MemoryManager",
@@ -13,5 +13,5 @@ __all__ = [
     "MemoryConfig",
     "MemoryType",
     "BaseMemory",
-    "LongTermMemory",  # deprecated
+
 ]

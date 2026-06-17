@@ -19,10 +19,11 @@ import asyncio
 import json
 import time
 
-from .tools import Tool
+from ..protocols.mcp.tool_adapter import ToolProtocol
 from .websocket_manager import WebSocketManager, _save_step, _update_step, _update_task
 from .intervention import InterventionHandler
 from ..llm_client import estimate_tokens
+from ..evaluation.hooks import on_task_completed
 
 # Token 预算
 TOKEN_BUDGET = 90_000
@@ -94,7 +95,7 @@ STEP_TIMEOUT = 60
 class AgentEngine:
     """增强版 ReAct Agent — Token 预算 + 并行执行 + 自动反思"""
 
-    def __init__(self, deepseek, tools: list[Tool], ws_manager: WebSocketManager,
+    def __init__(self, deepseek, tools: list[ToolProtocol], ws_manager: WebSocketManager,
                  intervention: InterventionHandler = None):
         self.deepseek = deepseek
         self.tools = tools
@@ -114,6 +115,8 @@ class AgentEngine:
                   max_iterations: int = MAX_ITERATIONS):
         start_time = time.time()
         self._called_history = []
+        self._current_task_id = task_id  # 供 _execute_tool 使用
+        self._current_step_num = 0       # 供 _execute_tool 使用
         task_id_str = str(task_id)
 
         # 生命周期：注册任务
@@ -190,7 +193,9 @@ class AgentEngine:
                         except json.JSONDecodeError:
                             args = {}
                         try:
-                            obs = await asyncio.wait_for(tool.handler(**args), timeout=STEP_TIMEOUT)
+                            obs = await self._execute_tool_with_retry(
+                                tool, args, tool.name, max_retries=3,
+                            )
                             obs_str = json.dumps(obs, ensure_ascii=False)[:2000]
                             direct_messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}]})
                             direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": obs_str})
@@ -223,6 +228,7 @@ class AgentEngine:
                 "total_tokens": total_tokens,
                 "duration_ms": duration_ms,
             })
+            asyncio.create_task(on_task_completed(task_id))
             if self.intervention:
                 await self.intervention.complete_task(task_id_str)
             return
@@ -269,7 +275,7 @@ class AgentEngine:
                     "message": f"第{iteration + 1}轮推理中...",
                 })
 
-                response = await self._call_llm(messages, tool_schemas)
+                response = await self._call_llm_streaming(messages, tool_schemas)
                 total_tokens += response.usage.total_tokens if response.usage else 0
 
                 msg = response.choices[0].message
@@ -347,6 +353,7 @@ class AgentEngine:
                         "total_tokens": total_tokens,
                         "duration_ms": duration_ms,
                     })
+                    asyncio.create_task(on_task_completed(task_id))
                     return
 
                 # ── 解析工具调用 (重复检测) ─────────────
@@ -385,47 +392,19 @@ class AgentEngine:
 
                     tool_start = time.time()
                     try:
-                        result = await asyncio.wait_for(
-                            tool.handler(**arguments),
-                            timeout=STEP_TIMEOUT,
+                        result = await self._execute_tool_with_retry(
+                            tool, arguments, tool_name, max_retries=3,
                         )
                         duration = int((time.time() - tool_start) * 1000)
                         return tc.id, {"result": result, "duration_ms": duration, "tool_name": tool_name}
-                    except asyncio.TimeoutError:
-                        return tc.id, {"error": f"工具执行超时（{STEP_TIMEOUT}秒）", "tool_name": tool_name}
                     except Exception as e:
-                        return tc.id, {"error": f"工具执行失败：{e}", "tool_name": tool_name}
+                        return tc.id, {"error": str(e), "tool_name": tool_name}
 
-                # 记录工具调用步骤（需要确认的工具先请求用户确认）
+                # 记录工具调用步骤（确认拦截已在 _execute_tool 中处理）
                 for i, (tc, tool_name, arguments) in enumerate(call_tasks):
                     if arguments.get("__blocked__"):
                         continue
                     sn = step_number + 1 + i
-                    tool = self.tool_map.get(tool_name)
-
-                    # 检查是否需要用户确认
-                    if tool and getattr(tool, 'require_confirmation', False):
-                        _save_step(task_id, sn, "tool_call", status="confirming",
-                                   tool_name=tool_name, tool_args=arguments)
-                        await self.ws.broadcast(task_id, "confirmation_required", {
-                            "step_num": sn,
-                            "tool_name": tool_name,
-                            "args": arguments,
-                        })
-                        # 等用户确认（最多 60 秒）
-                        confirmed = await self._wait_for_confirmation(task_id, sn)
-                        if not confirmed:
-                            arguments = {"__blocked__": True, "__reason__": "用户取消了此操作"}
-                            _update_step(task_id, sn, "skipped",
-                                         tool_result={"msg": "用户取消执行"}, duration_ms=0)
-                            await self.ws.broadcast(task_id, "step_complete", {
-                                "step_num": sn, "type": "tool_call",
-                                "tool_name": tool_name, "result": "⛔ 已取消",
-                            })
-                            continue
-                        else:
-                            _update_step(task_id, sn, "running",
-                                         tool_args=arguments)
 
                     _save_step(task_id, sn, "tool_call", status="running",
                                tool_name=tool_name, tool_args=arguments)
@@ -565,6 +544,7 @@ class AgentEngine:
                 "total_tokens": total_tokens,
                 "duration_ms": duration_ms,
             })
+            asyncio.create_task(on_task_completed(task_id))
 
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
@@ -575,6 +555,7 @@ class AgentEngine:
                 "error": str(e),
                 "last_step": step_number,
             })
+            asyncio.create_task(on_task_completed(task_id))
 
         finally:
             # 生命周期：清理干预资源
@@ -620,6 +601,125 @@ class AgentEngine:
             self.deepseek.chat.completions.create,
             **kwargs,
         )
+
+    async def _call_llm_streaming(self, messages: list[dict], tools: list[dict] = None):
+        """
+        LLM 流式调用 → WebSocket 推送 thinking_delta。
+
+        与 _call_llm 相同的 messages 预处理，但使用 stream=True。
+        返回完整响应对象（兼容现有 tool_calls 解析逻辑）。
+        """
+        from openai import OpenAI
+
+        cached_messages = list(messages)
+        if tools and self._tool_desc:
+            if len(cached_messages) < 2 or cached_messages[1].get("content", "")[:6] != "Tools:":
+                cached_messages.insert(1, {"role": "system", "content": self._tool_desc})
+
+        task_id = getattr(self, '_current_task_id', 0)
+        should_stream = task_id > 0
+
+        if not should_stream:
+            # 无 task_id（简单路径）→ 直接用非流式
+            return await self._call_llm(messages, tools)
+
+        # ── 流式调用 ──────────────────────────
+        await self.ws.broadcast(task_id, "thinking_start", {
+            "message": "Agent 正在思考...",
+        })
+
+        kwargs = {
+            "model": "deepseek-chat",
+            "messages": cached_messages,
+            "temperature": 0.7,
+            "max_tokens": 4096,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        # 在 executor 中运行同步流式调用
+        loop = asyncio.get_event_loop()
+        stream = await loop.run_in_executor(
+            None,
+            lambda: self.deepseek.chat.completions.create(**kwargs),
+        )
+
+        # 累积流式结果
+        content_parts = []
+        tool_call_chunks: dict[int, dict] = {}
+        total_tokens = 0
+
+        for chunk in stream:
+            if hasattr(chunk, 'usage') and chunk.usage:
+                total_tokens = getattr(chunk.usage, 'total_tokens', 0)
+
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if not delta:
+                continue
+
+            # 思考文本 → 推送到前端
+            if delta.content:
+                content_parts.append(delta.content)
+                await self.ws.broadcast(task_id, "thinking_delta", {
+                    "delta": delta.content,
+                })
+
+            # 累积 tool_calls
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_call_chunks:
+                        tool_call_chunks[idx] = {
+                            "id": "", "function_name": "", "function_args": ""
+                        }
+                    if tc_delta.id:
+                        tool_call_chunks[idx]["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_call_chunks[idx]["function_name"] += tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_call_chunks[idx]["function_args"] += tc_delta.function.arguments
+
+        await self.ws.broadcast(task_id, "thinking_end", {
+            "content": "".join(content_parts)[:500],
+        })
+
+        # ── 构造兼容的响应对象 ─────────────────
+        content = "".join(content_parts)
+
+        # 重建 tool_calls
+        tool_calls = []
+        for idx in sorted(tool_call_chunks.keys()):
+            tc = tool_call_chunks[idx]
+            tool_calls.append(type('ToolCall', (), {
+                'id': tc["id"],
+                'type': 'function',
+                'function': type('Function', (), {
+                    'name': tc["function_name"],
+                    'arguments': tc["function_args"],
+                }),
+            }))
+
+        # 构造 response-like 对象
+        message = type('Message', (), {
+            'content': content,
+            'tool_calls': tool_calls if tool_calls else None,
+        })()
+        choice = type('Choice', (), {
+            'message': message,
+        })()
+        usage = type('Usage', (), {
+            'total_tokens': total_tokens,
+            'prompt_tokens': 0,
+            'completion_tokens': 0,
+        })()
+        response = type('Response', (), {
+            'choices': [choice],
+            'usage': usage,
+        })()
+
+        return response
 
     def _smart_truncate(self, text: str, max_tokens: int = MAX_OBS_TOKENS) -> str:
         """
@@ -691,6 +791,92 @@ class AgentEngine:
         ] + keep
 
         return compressed
+
+    async def _execute_tool(self, tool: ToolProtocol, args: dict) -> dict:
+        """执行工具调用，确认检查在主进程拦截"""
+        if tool.require_confirmation:
+            # 引擎侧拦截：MCP Server 不执行确认检查
+            # 复用现有 ws_manager.confirmations 机制
+            step_key = f"{self._current_task_id}_{self._current_step_num}"
+            _save_step(self._current_task_id, self._current_step_num, "tool_call",
+                       status="confirming", tool_name=tool.name, tool_args=args)
+            await self.ws.broadcast(self._current_task_id, "confirmation_required", {
+                "step_num": self._current_step_num,
+                "tool_name": tool.name,
+                "args": args,
+            })
+            confirmed = await self._wait_for_confirmation(
+                self._current_task_id, self._current_step_num,
+            )
+            if not confirmed:
+                _update_step(self._current_task_id, self._current_step_num, "skipped",
+                             tool_result={"msg": "用户取消执行"}, duration_ms=0)
+                await self.ws.broadcast(self._current_task_id, "step_complete", {
+                    "step_num": self._current_step_num, "type": "tool_call",
+                    "tool_name": tool.name, "result": "⛔ 已取消",
+                })
+                return {"status": "rejected", "message": "User denied confirmation"}
+            else:
+                _update_step(self._current_task_id, self._current_step_num, "running",
+                             tool_args=args)
+
+        return await tool.handler(**args)
+
+    async def _execute_tool_with_retry(self, tool: ToolProtocol, args: dict,
+                                       tool_name: str, max_retries: int = 3) -> dict:
+        """
+        带指数退避的工具执行重试。
+
+        仅对超时/网络类错误重试，不对工具逻辑错误（如文件不存在）重试。
+        Backoff: 1s → 2s → 4s
+        """
+        task_id = getattr(self, '_current_task_id', 0)
+        step_num = getattr(self, '_current_step_num', 0)
+
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                result = await asyncio.wait_for(
+                    self._execute_tool(tool, dict(args)),
+                    timeout=STEP_TIMEOUT,
+                )
+                if attempt > 0 and task_id:
+                    await self.ws.broadcast(task_id, "retry_success", {
+                        "step_num": step_num,
+                        "tool_name": tool_name,
+                        "attempt": attempt + 1,
+                        "message": f"{tool_name} 重试成功（第{attempt}次重试）",
+                    })
+                return result
+            except asyncio.TimeoutError:
+                last_error = f"工具执行超时（{STEP_TIMEOUT}秒）"
+            except Exception as e:
+                err_str = str(e)
+                # 不重试的错误类型：工具不存在、用户拒绝、参数错误
+                if any(kw in err_str.lower() for kw in
+                       ["unknown tool", "用户取消", "rejected", "invalid argument",
+                        "not found", "no such file", "permission denied"]):
+                    raise
+                last_error = f"工具执行失败：{e}"
+
+            if attempt < max_retries:
+                wait = 2 ** attempt  # 1s, 2s, 4s
+                logger.warning(
+                    f"Retry {attempt + 1}/{max_retries} for {tool_name}: {last_error}, "
+                    f"waiting {wait}s"
+                )
+                if task_id:
+                    await self.ws.broadcast(task_id, "retry_attempt", {
+                        "step_num": step_num,
+                        "tool_name": tool_name,
+                        "attempt": attempt + 1,
+                        "max_retries": max_retries,
+                        "wait_seconds": wait,
+                        "error": last_error,
+                    })
+                await asyncio.sleep(wait)
+
+        raise Exception(f"{tool_name}: {last_error}（重试{max_retries}次后仍失败）")
 
     async def _wait_for_confirmation(self, task_id: int, step_num: int) -> bool:
         """等待用户确认工具执行，最长 60 秒"""

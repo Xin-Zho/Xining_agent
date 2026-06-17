@@ -11,7 +11,7 @@ from .agent import WebSocketManager
 from .agent.intervention import InterventionHandler
 from .protocols.mcp import ToolRegistry, MCPClientManager
 from .llm_client import LLMClient
-from .context_manager import ContextManager
+from .memory.context import ContextBuilder
 from .training import DialogueLogger
 
 # ── Config ──────────────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 ws_manager = WebSocketManager()
 intervention_handler = InterventionHandler()
 llm_client = LLMClient() if deepseek else None
-ctx_manager = ContextManager(llm_client)
+ctx_manager = ContextBuilder(llm_client=llm_client)
 dialogue_logger = DialogueLogger()
 
 # Tool Registry & MCP Manager
