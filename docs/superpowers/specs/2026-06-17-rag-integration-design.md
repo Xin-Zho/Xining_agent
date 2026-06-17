@@ -3,6 +3,7 @@
 > 日期：2026-06-17
 > 状态：设计确认，待实现
 > 关联文档：[MCP 集成设计](2026-06-17-mcp-integration-design.md) · [技术路线图](../tech-roadmap.md)
+> 上次 Review：2026-06-17（P0×1 + P1×2 + 实现注意×6，全部修正）
 
 ---
 
@@ -26,6 +27,54 @@
 2. **用户隔离** — 每个用户的文档互不可见，通过 `_meta.user_id` 过滤
 3. **自动入库** — 用户上传文件和 Agent `web_fetch` 抓取结果自动进入知识库
 4. **Agent 自主检索** — LLM 判断需要查知识库时主动调用 `rag_search`
+
+## 4. P0: Embedding 和 ChromaDB 单例（关键修正）
+
+### 问题
+
+`memory_server.py` 的现有 handler 每次调用 `new MemoryManager()` → `new LocalEmbedding()`。
+LocalEmbedding 惰性加载 BGE 模型（~100MB），意味着**每次工具调用都重新创建实例**。虽然 `SentenceTransformer` 有进程级缓存，但 Python 对象的重复创建浪费内存且不可靠。
+
+RAG 的 `rag_search` 被高频调用时，不能每次都 new。
+
+### 修正
+
+在 `memory_server.py` 模块级建两个单例：
+
+```python
+# memory_server.py 模块顶层
+
+_embedding: LocalEmbedding = None
+_chroma_client = None
+_chroma_collections: dict[str, object] = {}  # collection 缓存
+
+def _get_embedding() -> LocalEmbedding:
+    global _embedding
+    if _embedding is None:
+        _embedding = LocalEmbedding()
+    return _embedding
+
+def _get_chroma_client():
+    global _chroma_client
+    if _chroma_client is None:
+        import chromadb
+        _chroma_client = chromadb.PersistentClient(
+            path=os.path.join(PROJECT_ROOT, "backend", "data", "chroma")
+        )
+    return _chroma_client
+
+def _get_rag_collection():
+    collection_name = "rag_documents"
+    if collection_name not in _chroma_collections:
+        client = _get_chroma_client()
+        _chroma_collections[collection_name] = client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+    return _chroma_collections[collection_name]
+```
+
+现有 `handle_memory_search` 和 `handle_list_downloads` 也改用 `_get_embedding()`，不做 breaking change 但受益于单例。
 
 ## 4. 数据流
 
@@ -121,10 +170,15 @@
 
 ## 6. 分块策略
 
+### BGE token 上限
+
+BGE-small-zh-v1.5 的 `max_seq_length = 512 tokens`。中英文混合时 1 token ≈ 1.5-2 字符，512 tokens ≈ 750-1000 字符。但加 overlap 后实际块长 = chunk_size + overlap，需在 512 token 内。安全值：`chunk_size=400, overlap=80`，即最长 480 字符 ≈ 300 tokens。
+
 ```python
-def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 100) -> list[dict]:
+def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[dict]:
     """
     按段落边界优先切分，段落过长则按句号切分。
+    chunk_size=400 确保加 overlap 后不超过 BGE 512 token 上限。
     返回: [{"chunk_id": "chunk_0", "text": "...", "index": 0, "total": N}, ...]
     """
     paragraphs = text.split("\n\n")
@@ -199,20 +253,36 @@ collection_name: rag_documents
 
 ### 8.1 用户上传 → `/api/upload`
 
-在 `routes/chat.py` 的 upload handler 中，PDF 和文本文件解析完成后，调用 `rag_ingest` 入库：
+**关键**：现有 upload handler 在返回前把 PDF 文本截断到 `[:80000]`。`rag_ingest` 需要用**截断前的全量文本**，否则长文档后半段丢失。
 
 ```python
-# 伪代码：在 upload() 返回前
-if content_type in ("application/pdf", "text/plain", "text/markdown"):
+# chat.py upload handler 修改：
+if content_type == "application/pdf":
+    # ... 解析逻辑 ...
+    pdf_text = "\n--- 分页 ---\n".join(text_parts)  # 全量
+    if pdf_text.strip():
+        # 1. 异步入库（全量文本）
+        asyncio.create_task(
+            mcp_manager.call_tool("memory", "rag_ingest", {
+                "content": pdf_text,
+                "source": file.filename,
+            })
+        )
+        # 2. 返回给前端的用截断版
+        return {"content": f"[PDF: {file.filename}]\n{pdf_text[:80000]}", ...}
+
+elif content_type in ("text/plain", "text/markdown", ...):
+    # 同理：text 是全量的，直接传入
     asyncio.create_task(
         mcp_manager.call_tool("memory", "rag_ingest", {
-            "content": text_content,
+            "content": text,
             "source": file.filename,
         })
     )
+    return {"content": text, ...}
 ```
 
-异步入库，不阻塞上传响应。
+异步入库，不阻塞上传响应。入库用全量文本，前端返回照旧截断。
 
 ### 8.2 Agent web_fetch → LLM 决定入库
 
@@ -277,7 +347,73 @@ Agent: 我抓到了一篇关于GRPO的论文，内容很有价值
 | 检索无结果 | `rag_search` 返回 `{"results": [], "count": 0}` |
 | 用户隔离 | 检索时自动带 `where={"user_id": user_id}` |
 
-## 12. 测试策略
+## 12. 实现注意事项
+
+### 12.1 追加入库的 chunk_index 续排
+
+```python
+def _get_next_chunk_index(collection, source: str, user_id: int) -> int:
+    """查询已有分块，新块从 max+1 开始"""
+    existing = collection.get(
+        where={"$and": [{"source": source}, {"user_id": user_id}]}
+    )
+    if existing and existing["ids"]:
+        indices = [int(m["chunk_index"]) for m in existing["metadatas"]]
+        return max(indices) + 1
+    return 0
+```
+
+### 12.2 Score 转换
+
+ChromaDB 余弦距离返回值：`distance`（0=完全相同，2=完全相反）。
+
+```python
+score = round(1.0 - distance, 4)  # 转换到 [0, 1]，越高越相关
+```
+
+与 `semantic.py:97` 格式一致。
+
+### 12.3 大文档批量嵌入
+
+50+ 块一次性 `embed(chunks)` 可能内存溢出。分批处理：
+
+```python
+def _embed_batch(texts: list[str], batch_size: int = 32) -> list[list[float]]:
+    emb = _get_embedding()
+    all_embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i + batch_size]
+        all_embeddings.extend(emb.embed(batch))
+    return all_embeddings
+```
+
+### 12.4 Collection 创建参数
+
+```python
+collection = client.get_or_create_collection(
+    name="rag_documents",
+    metadata={"hnsw:space": "cosine"},  # 与 semantic_all/episodic_all 一致
+)
+```
+
+### 12.5 文本存储位置
+
+现有 memory collection（semantic_all/episodic_all）把原文存 SQLite、ChromaDB 只存向量+metadata。RAG 设计把原文直接存 ChromaDB 的 `documents` 字段——RAG 不需要 SQLite 的 importance/access_count/ttl 体系，纯检索场景 ChromaDB 的 `documents` 字段更直接。
+
+### 12.6 web_fetch → rag_ingest 的 token 消耗
+
+LLM 调用 `rag_ingest` 时需把全文塞进 tool call 的 `content` 参数。超长网页（>2 万字）可能触发 API 参数长度限制。v1 可接受（大多数网页 <1 万字），后续可考虑：
+
+- 加 `ingest_from_cache` 工具：Agent 不传全文，只传 URL，memory_server 自己从缓存或重新 fetch 取内容
+- 自动截断：content 传前 5000 字，剩余的异步补充
+
+### 12.7 文本去重优化
+
+当前设计每次 `rag_ingest` 都重新分块+嵌入。同一 source 重复调用会浪费 ChromaDB 存储。实现时加入轻量去重：对 content 做 `hashlib.md5`，查询是否已有同 hash 的记录。
+
+---
+
+## 13. 测试策略
 
 | 层级 | 内容 |
 |------|------|
@@ -291,4 +427,4 @@ Agent: 我抓到了一篇关于GRPO的论文，内容很有价值
 
 | 日期 | 内容 | 作者 |
 |------|------|------|
-| 2026-06-17 | 初始版本 | Xin-Zho + Claude |
+| 2026-06-17 | Review v2：修正 P0(embedding 单例) + P1(chunk_size 400→BGE上限 + upload 全量文本) + 7 条实现注意事项 | Xin-Zho + Claude |
