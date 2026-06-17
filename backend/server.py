@@ -57,10 +57,17 @@ async def lifespan(app: FastAPI):
         tool_registry.register_local(tool)
 
     # 2. 连接 MCP Server + 发现工具 → freeze
-    await tool_registry.initialize(mcp_manager)
+    try:
+        await tool_registry.initialize(mcp_manager)
+        mcp_ok = True
+    except Exception as e:
+        print(f"[WARN] MCP Server 初始化失败（仅本地工具可用）: {e}")
+        mcp_ok = False
 
+    total_tools = len(tool_registry.get_all_tools())
+    mcp_count = total_tools - len(LOCAL_TOOLS)
     print(f"数据库已初始化 (chat/agent/memory)")
-    print(f"工具注册完成: {len(tool_registry.get_all_tools())} 个 ({len(LOCAL_TOOLS)} local + {len(tool_registry.get_all_tools()) - len(LOCAL_TOOLS)} MCP)")
+    print(f"工具注册完成: {total_tools} 个 ({len(LOCAL_TOOLS)} local + {mcp_count} MCP{' [部分失败]' if not mcp_ok else ''})")
     print(f"Agent 模式: react / plan_solve")
     print(f"DeepSeek: {'已配置' if deepseek else '未配置'}")
     print(f"API 文档: http://127.0.0.1:8000/docs")

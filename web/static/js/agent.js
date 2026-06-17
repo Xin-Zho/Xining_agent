@@ -38,12 +38,28 @@ function appendThinking(delta) {
 }
 
 function finishThinking(content) {
-  if (!thinkingStreamEl) return;
-  thinkingStreamEl.classList.add('collapsed');
-  var summary = (content || thinkingBuffer || '').slice(0, 200);
-  thinkingStreamEl.innerHTML = '<div class="label">💭 已思考</div><div>'+U.esc(summary)+(summary.length>=200?'...':'')+'</div>';
-  thinkingStreamEl.onclick = function() { this.classList.toggle('collapsed'); };
-  thinkingStreamEl = null;
+  // If active streaming UI exists, collapse it
+  if (thinkingStreamEl) {
+    thinkingStreamEl.classList.add('collapsed');
+    var summary = (content || thinkingBuffer || '').slice(0, 200);
+    thinkingStreamEl.innerHTML = '<div class="label">💭 已思考</div><div>'+U.esc(summary)+(summary.length>=200?'...':'')+'</div>';
+    thinkingStreamEl.onclick = function() { this.classList.toggle('collapsed'); };
+    thinkingStreamEl = null;
+  } else {
+    // No active stream — render thinking card directly
+    var msgs = document.getElementById('messages');
+    var bubble = document.getElementById('streamingBubble');
+    var div = document.createElement('div');
+    div.className = 'step thinking-card';
+    var text = (content || thinkingBuffer || '').slice(0, 500);
+    div.innerHTML = '<strong>💭 思考</strong><div style="margin-top:4px;font-size:13px;color:var(--slate-6)">'+U.esc(text)+(text.length>=500?'...':'')+'</div>';
+    // Insert before streamingBubble so answer stays at bottom
+    if (bubble) {
+      msgs.insertBefore(div, bubble);
+    } else {
+      msgs.appendChild(div);
+    }
+  }
   thinkingBuffer = '';
   U.scrollBottom();
 }
@@ -77,6 +93,9 @@ function renderStep(ev) {
   var stype = ev.step_type || ev.type || '';
   var div = document.createElement('div');
   div.className = 'step ' + stype;
+
+  // Insert before streamingBubble so final answer stays at bottom
+  var bubble = document.getElementById('streamingBubble');
 
   if (stype === 'tool_call') {
     var tool = ev.tool_name || '';
@@ -118,7 +137,12 @@ function renderStep(ev) {
     div.innerHTML = '<strong>'+U.esc(stype)+'</strong>';
   }
 
-  msgs.appendChild(div);
+  // Insert before streamingBubble so answer stays at bottom
+  if (bubble) {
+    msgs.insertBefore(div, bubble);
+  } else {
+    msgs.appendChild(div);
+  }
   U.scrollBottom();
 }
 

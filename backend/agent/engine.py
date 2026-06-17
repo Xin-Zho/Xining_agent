@@ -648,12 +648,18 @@ class AgentEngine:
                         if tc_delta.function.arguments:
                             tool_call_chunks[idx]["function_args"] += tc_delta.function.arguments
 
+        thinking_text = "".join(content_parts)
         await self.ws.broadcast(task_id, "thinking_end", {
-            "content": "".join(content_parts)[:500],
+            "content": thinking_text[:500],
         })
 
+        # Save thinking as a DB step so SSE poller picks it up
+        if thinking_text.strip():
+            _save_step(task_id, self._current_step_num, "thinking",
+                       status="completed", thought=thinking_text[:2000])
+
         # ── 构造兼容的响应对象 ─────────────────
-        content = "".join(content_parts)
+        content = thinking_text
 
         # 重建 tool_calls
         tool_calls = []

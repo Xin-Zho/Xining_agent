@@ -263,6 +263,11 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
                 for s in steps:
                     last_step = s["step_number"]
 
+                    # Thinking step → emit thinking_end for frontend
+                    if s["step_type"] == "thinking" and s.get("thought"):
+                        yield f"data: {json.dumps({'type': 'thinking_end', 'content': s['thought']})}\n\n"
+                        continue
+
                     if s["status"] == "confirming":
                         yield f"data: {json.dumps({'type': 'confirmation_required', 'task_id': task_id, 'step_num': s['step_number'], 'tool_name': s['tool_name'], 'args': s['tool_args']})}\n\n"
                         key = f"{task_id}_{s['step_number']}"
