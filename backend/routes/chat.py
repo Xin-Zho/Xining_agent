@@ -1,4 +1,5 @@
 """对话路由 — 非流式、流式、文件上传、legacy 流式"""
+import asyncio
 import io
 import json
 
@@ -8,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from ..models import ChatRequest
 from ..database import get_db
 from ..auth import get_current_user
+from ..dependencies import mcp_manager
 from ..dependencies import (
     deepseek, SYSTEM_PROMPT, MAX_HISTORY_ROUNDS, MAX_FILE_SIZE,
     ALLOWED_IMAGE, ALLOWED_TEXT, dialogue_logger, llm_client, ctx_manager,
@@ -210,6 +212,13 @@ async def upload(file: UploadFile = File(...), user: dict = Depends(get_current_
                 pdf_text = "\n--- 分页 ---\n".join(text_parts)
                 if not pdf_text.strip():
                     raise HTTPException(400, "PDF 文件中未提取到文字（可能是扫描件或图片型 PDF）")
+                # 异步入库：全量文本 → rag_ingest
+                asyncio.create_task(
+                    mcp_manager.call_tool("memory", "rag_ingest", {
+                        "content": pdf_text,
+                        "source": file.filename,
+                    })
+                )
                 return {
                     "ok": True, "filename": file.filename, "content_type": content_type,
                     "is_image": False, "content": f"[PDF: {file.filename}]\n{pdf_text[:80000]}",
@@ -218,6 +227,15 @@ async def upload(file: UploadFile = File(...), user: dict = Depends(get_current_
                 raise
             except Exception as e:
                 raise HTTPException(400, f"PDF 解析失败：{str(e)[:100]}")
+
+        # 文本文件异步入库
+        if content_type in ("text/plain", "text/markdown", "text/x-python", "application/json", "text/csv"):
+            asyncio.create_task(
+                mcp_manager.call_tool("memory", "rag_ingest", {
+                    "content": text,
+                    "source": file.filename,
+                })
+            )
 
         return {
             "ok": True, "filename": file.filename, "content_type": content_type,
