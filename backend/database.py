@@ -73,7 +73,7 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'pending'
                 CHECK(status IN ('pending','running','completed','failed','skipped','confirming','cancelled')),
             step_type TEXT NOT NULL
-                CHECK(step_type IN ('plan','thought','tool_call','observation','response')),
+                CHECK(step_type IN ('plan','thought','tool_call','observation','response','thinking')),
             tool_name TEXT,
             tool_args TEXT,
             tool_result TEXT,
@@ -84,6 +84,34 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_agent_tasks_user ON agent_tasks(user_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_agent_steps_task ON agent_steps(task_id, step_number);
     """)
+    a.commit()
+    # Migration: fix existing agent_steps CHECK constraint to include 'thinking'
+    try:
+        a.execute("INSERT INTO agent_steps (task_id, step_number, status, step_type) VALUES (-1, -1, 'failed', 'thinking')")
+        a.execute("DELETE FROM agent_steps WHERE task_id = -1")
+    except sqlite3.IntegrityError:
+        # Rebuild table with new constraint
+        a.executescript("""
+            CREATE TABLE IF NOT EXISTS agent_steps_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES agent_tasks(id) ON DELETE CASCADE,
+                step_number INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','running','completed','failed','skipped','confirming','cancelled')),
+                step_type TEXT NOT NULL
+                    CHECK(step_type IN ('plan','thought','tool_call','observation','response','thinking')),
+                tool_name TEXT,
+                tool_args TEXT,
+                tool_result TEXT,
+                thought TEXT,
+                duration_ms INTEGER,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO agent_steps_new SELECT * FROM agent_steps;
+            DROP TABLE agent_steps;
+            ALTER TABLE agent_steps_new RENAME TO agent_steps;
+            CREATE INDEX IF NOT EXISTS idx_agent_steps_task ON agent_steps(task_id, step_number);
+        """)
     a.commit(); a.close()
 
     # memory.db — 长期记忆 + 下载记录
