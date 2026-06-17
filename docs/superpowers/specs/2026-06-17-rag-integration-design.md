@@ -28,7 +28,7 @@
 3. **自动入库** — 用户上传文件和 Agent `web_fetch` 抓取结果自动进入知识库
 4. **Agent 自主检索** — LLM 判断需要查知识库时主动调用 `rag_search`
 
-## 4. P0: Embedding 和 ChromaDB 单例（关键修正）
+### 3.1 Embedding 和 ChromaDB 单例（P0 修正）
 
 ### 问题
 
@@ -59,7 +59,7 @@ def _get_chroma_client():
     if _chroma_client is None:
         import chromadb
         _chroma_client = chromadb.PersistentClient(
-            path=os.path.join(PROJECT_ROOT, "backend", "data", "chroma")
+            path=os.path.join(PROJECT_ROOT, "data", "chroma")
         )
     return _chroma_client
 
@@ -89,7 +89,7 @@ def _get_rag_collection():
                                      ┌────▼────────────────────┐
                                      │ _chunk_text(content)     │
                                      │   → 按段落/句号切分       │
-                                     │   → ~500字/块, 100字重叠 │
+                                     │   → ~400字/块, 80字重叠  │
                                      │                          │
                                      │ embed(chunks) → ChromaDB │
                                      │ collection: rag_documents│
@@ -236,6 +236,7 @@ collection_name: rag_documents
     title:          str         ← 文档标题
     chunk_index:    int
     total_chunks:   int
+    content_hash:   str         ← 全量 content 的 MD5（用于去重）
     ingested_at:    float       ← timestamp
 ```
 
@@ -407,9 +408,21 @@ LLM 调用 `rag_ingest` 时需把全文塞进 tool call 的 `content` 参数。�
 - 加 `ingest_from_cache` 工具：Agent 不传全文，只传 URL，memory_server 自己从缓存或重新 fetch 取内容
 - 自动截断：content 传前 5000 字，剩余的异步补充
 
-### 12.7 文本去重优化
+### 12.7 文本去重
 
-当前设计每次 `rag_ingest` 都重新分块+嵌入。同一 source 重复调用会浪费 ChromaDB 存储。实现时加入轻量去重：对 content 做 `hashlib.md5`，查询是否已有同 hash 的记录。
+每次 `rag_ingest` 都重新分块+嵌入。同一 source 重复调用会浪费存储。
+
+**hash 粒度**：对全量 `content` 做 MD5（不是 per-chunk）。相同内容 → 分块结果必然相同 → 不需要重新嵌入。
+
+**存储**：metadata 字段加 `content_hash`。
+
+**命中行为**：跳过整个 ingest，返回：
+
+```json
+{"ok": true, "skipped": true, "reason": "duplicate content"}
+```
+
+**唯一性约束**：`(source, content_hash, user_id)` 组合唯一。同一 source 不同内容（更新版本文档）不触发去重。
 
 ---
 
@@ -427,4 +440,4 @@ LLM 调用 `rag_ingest` 时需把全文塞进 tool call 的 `content` 参数。�
 
 | 日期 | 内容 | 作者 |
 |------|------|------|
-| 2026-06-17 | Review v2：修正 P0(embedding 单例) + P1(chunk_size 400→BGE上限 + upload 全量文本) + 7 条实现注意事项 | Xin-Zho + Claude |
+| 2026-06-17 | Review v3：修正 P0(ChromaDB 路径) + P2×3(数据流图/章节编号/MD5去重规格) | Xin-Zho + Claude |
