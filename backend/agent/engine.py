@@ -127,10 +127,11 @@ class AgentEngine:
             "title": task_description[:50],
         })
 
-        # 注入跨会话记忆上下文
-        from ..memory.long_term import LongTermMemory
-        ltm = LongTermMemory(user_id)
-        memory_context = ltm.get_context_for_prompt(max_items=5)
+        # 注入记忆上下文（三层记忆系统）
+        from ..memory.manager import MemoryManager
+        mem_mgr = MemoryManager(user_id)
+        self._mem_mgr = mem_mgr
+        memory_context = await mem_mgr.get_context_for_prompt(task_description[:100])
         system_prompt = AGENT_SYSTEM_PROMPT
         if memory_context:
             system_prompt = AGENT_SYSTEM_PROMPT + "\n\n" + memory_context
@@ -205,10 +206,11 @@ class AgentEngine:
             # 简单路径也保存记忆（过滤纯闲聊）
             if len(final_answer) > 30 and not any(w == raw_question for w in ["你好", "谢谢", "再见", "OK", "Hi", "hi"]):
                 try:
-                    ltm = LongTermMemory(user_id)
-                    mem_key = raw_question[:50].replace("\n", " ").strip()
-                    mem_value = final_answer[:800]
-                    ltm.save(mem_key, mem_value)
+                    await self._mem_mgr.add(
+                        content=f"Q: {raw_question[:80]}\nA: {final_answer[:200]}",
+                        memory_type="episodic",
+                        importance=0.4,
+                    )
                 except Exception:
                     pass
 
@@ -306,14 +308,14 @@ class AgentEngine:
                                 "summary": event["summary"],
                             })
 
-                    # 自动保存关键发现到长期记忆
+                    # 自动保存任务总结到情景记忆
                     try:
-                        from ..memory.long_term import LongTermMemory
-                        ltm = LongTermMemory(user_id)
-                        # 提取任务关键词作为记忆标题
-                        mem_key = task_description[:50].replace("\n", " ").strip()
-                        mem_value = final_answer[:800]
-                        ltm.save(mem_key, mem_value)
+                        await self._mem_mgr.add(
+                            content=f"任务: {task_description[:80]}\n结论: {final_answer[:300]}",
+                            memory_type="episodic",
+                            importance=0.5,
+                            metadata={"task_id": task_id},
+                        )
                     except Exception:
                         pass  # 记忆保存失败不阻塞
 
@@ -541,13 +543,16 @@ class AgentEngine:
                         "summary": event["summary"],
                     })
 
-            # 自动保存到长期记忆
             if len(final_answer) > 30:
                 try:
-                    ltm = LongTermMemory(user_id)
-                    mem_key = task_description[:50].replace("\n", " ").strip()
-                    mem_value = final_answer[:800]
-                    ltm.save(mem_key, mem_value)
+                    await self._mem_mgr.add(
+                        content=f"任务(达最大轮次): {task_description[:80]}\n结论: {final_answer[:300]}",
+                        memory_type="episodic",
+                        importance=0.5,
+                        metadata={"task_id": task_id},
+                    )
+                    await self._mem_mgr.consolidate()
+                    await self._mem_mgr.forget()
                 except Exception:
                     pass
 
