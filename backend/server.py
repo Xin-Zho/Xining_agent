@@ -107,6 +107,7 @@ app.include_router(eval_router)
 
 if os.path.isdir(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/app", StaticFiles(directory=STATIC_DIR, html=True), name="app")
 
 
 # ── Main ───────────────────────────────────────────────────────────────
