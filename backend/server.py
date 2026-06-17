@@ -61,7 +61,7 @@ from .agent.intervention import InterventionHandler
 from .llm_client import LLMClient
 from .context_manager import ContextManager
 from .training import DialogueLogger, RuleExtractor
-from .memory import LongTermMemory
+from .memory import LongTermMemory, MemoryManager
 
 # ── Config ──────────────────────────────────────────────────────────────
 
@@ -706,26 +706,30 @@ def logs_suggestions(user: dict = Depends(get_current_user)):
 # ── Memory routes ───────────────────────────────────────────────────────
 
 @app.get("/api/memory")
-def list_memory(user: dict = Depends(get_current_user)):
-    ltm = LongTermMemory(user["id"])
-    return {"memories": ltm.list_all()}
+async def list_memory(user: dict = Depends(get_current_user)):
+    mgr = MemoryManager(user["id"])
+    items = await mgr.search(query="", memory_types=["episodic", "semantic"], limit=50)
+    return {"memories": [i.to_dict() for i in items]}
 
 
 @app.post("/api/memory")
-def save_memory(body: dict, user: dict = Depends(get_current_user)):
-    key = body.get("key", "").strip()
-    value = body.get("value", "").strip()
-    if not key or not value:
-        raise HTTPException(400, "key 和 value 不能为空")
-    ltm = LongTermMemory(user["id"])
-    ltm.save(key, value)
-    return {"ok": True, "key": key}
+async def save_memory(body: dict, user: dict = Depends(get_current_user)):
+    content = body.get("content", body.get("value", "")).strip()
+    if not content:
+        raise HTTPException(400, "content 不能为空")
+    memory_type = body.get("memory_type", "semantic")
+    importance = body.get("importance", 0.7)
+    mgr = MemoryManager(user["id"])
+    mid = await mgr.add(content=content, memory_type=memory_type, importance=importance)
+    return {"ok": True, "memory_id": mid}
 
 
-@app.delete("/api/memory/{key}")
-def delete_memory(key: str, user: dict = Depends(get_current_user)):
-    ltm = LongTermMemory(user["id"])
-    ltm.delete(key)
+@app.delete("/api/memory/{memory_id}")
+async def delete_memory(memory_id: str, user: dict = Depends(get_current_user)):
+    mgr = MemoryManager(user["id"])
+    ok = await mgr._episodic.delete(memory_id) or await mgr._semantic.delete(memory_id)
+    if not ok:
+        raise HTTPException(404, "记忆不存在")
     return {"ok": True}
 
 
