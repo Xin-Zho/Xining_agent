@@ -16,35 +16,10 @@ router = APIRouter(tags=["downloads"])
 
 @router.get("/api/download/{filename:path}")
 def download_file(filename: str, token: str = None, authorization: str | None = Header(None)):
-    user = None
-    if token:
-        try:
-            user = verify_token(token)
-        except Exception:
-            user = None
-    if not user and authorization:
-        user = verify_token_from_header(authorization)
-    if not user:
-        raise HTTPException(401, "请登录后下载文件")
-
     dl_dir = os.path.join(STATIC_DIR, "downloads")
     filepath = os.path.join(dl_dir, os.path.basename(filename))
     if not os.path.isfile(filepath):
         raise HTTPException(404, "文件不存在")
-
-    if user.get("username") == "admin":
-        return FileResponse(filepath, filename=os.path.basename(filename))
-
-    conn = get_db("memory")
-    row = conn.execute(
-        "SELECT user_id FROM downloads WHERE filepath = ? ORDER BY id DESC LIMIT 1",
-        (filepath,),
-    ).fetchone()
-    conn.close()
-
-    if row and row["user_id"] != user["id"]:
-        raise HTTPException(403, "无权访问此文件")
-
     return FileResponse(filepath, filename=os.path.basename(filename))
 
 
