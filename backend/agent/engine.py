@@ -51,12 +51,10 @@ AGENT_SYSTEM_PROMPT = """You are an AI agent. You MUST use the provided function
 
 ## Rules
 1. CALL tools via function calling — do NOT write tool calls as text or code blocks.
-2. Batch multiple independent tool calls in ONE response.
-3. If a tool fails or returns empty, immediately try web_search as fallback.
-4. Max 5 rounds. After round 3 you MUST stop calling tools and write a final answer based on available data, even if incomplete. Never exceed 3 rounds unless critical data is completely missing.
-5. Batch independent tool calls into ONE round — do not spread them across rounds.
-6. If a tool fails, try the fallback ONCE. If it fails again, move on without it.
-7. Final answer: Markdown tables with source URLs. Download links use /api/download/ format.
+2. Batch multiple independent tool calls in ONE response — do NOT spread them across rounds.
+3. If a tool fails, move on. Do NOT retry the same tool with the same arguments.
+4. Max 3 rounds total. After round 2, stop calling tools and write your final answer based on available data. Only use round 3 if absolutely essential information is still missing.
+5. Final answer: Markdown tables with source URLs. Download links use /api/download/ format.
 8. Think in English, answer in Chinese."""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
@@ -339,24 +337,27 @@ class AgentEngine:
                     except Exception:
                         pass  # 记忆保存失败不阻塞
 
-                    # 自动反思
+                    # 自动反思：只润色文字，不搜新数据，结果投评估
                     reflection = await self._reflect(task_description, final_answer)
                     if reflection and "pass" not in reflection.lower() and len(reflection) > 5:
-                        # 反思发现问题，再试一次
-                        messages.append({"role": "assistant", "content": final_answer})
-                        messages.append({
-                            "role": "user",
-                            "content": f"评审反馈：{reflection}\n\n请根据反馈修正你的回答。"
-                        })
-                        step_number += 1
-                        await self.ws.broadcast(task_id, "step_start", {
-                            "step_num": step_number,
-                            "type": "thought",
-                            "message": "自我反思中，改进回答...",
-                        })
-                        response2 = await self._call_llm(messages, tool_schemas)
-                        total_tokens += response2.usage.total_tokens if response2.usage else 0
-                        final_answer = response2.choices[0].message.content or final_answer
+                        # 反思发现问题 → 仅基于已有信息修正文字，不给工具
+                        polish_messages = [
+                            {"role": "system", "content": "你是一个文字润色专家。根据评审意见修正以下回答，只修正文字表达，不补充新信息。用中文。"},
+                            {"role": "user", "content": f"评审意见：{reflection}\n\n原始回答：{final_answer}\n\n修正后的回答："},
+                        ]
+                        try:
+                            polish_resp = await self._call_llm(polish_messages, None)
+                            total_tokens += polish_resp.usage.total_tokens if polish_resp.usage else 0
+                            final_answer = polish_resp.choices[0].message.content or final_answer
+                        except Exception:
+                            pass  # 润色失败不阻塞
+                    # 反思结果存入 DB（供评估系统聚合分析）
+                    try:
+                        from ..evaluation.db import create_task_evaluation
+                        reflection_quality = {"reflection": reflection, "final_answer_len": len(final_answer)}
+                        create_task_evaluation(task_id, reflection_quality, mode="auto")
+                    except Exception:
+                        pass
 
                     duration_ms = int((time.time() - start_time) * 1000)
                     _update_task(task_id, status="completed", final_answer=final_answer,
@@ -481,10 +482,6 @@ class AgentEngine:
                         # 非阻塞类失败：递增连续失败计数
                         if not arguments.get("__blocked__"):
                             self._consecutive_failures[tool_name] = self._consecutive_failures.get(tool_name, 0) + 1
-
-                    # 失败提示
-                    if any(w in observation for w in ["失败", "错误", "超时", "不支持", "安全限制", "异常", "阻止"]):
-                        observation += "\n（此工具未成功，请换一个方法）"
 
                     step_data = {
                         "turn": iteration + 1,
