@@ -172,9 +172,215 @@ async def _timer_set(seconds: int, label: str = "计时器") -> dict:
     return {"label": label, "seconds": seconds, "done": True}
 
 
+# ── 本地 web_search（进程内，不经过 MCP，稳定不反爬）──────────────────
+
+async def _web_search(query: str, max_results: int = 5, fresh: str = "") -> dict:
+    """多引擎网页搜索，百度优先 → cn.bing.com → 搜狗 → DuckDuckGo"""
+    import re as _re
+    import urllib.request as _ureq
+    items = []
+
+    def _do_fetch(url, timeout, parser):
+        nonlocal items
+        req = _ureq.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        })
+        with _ureq.urlopen(req, timeout=timeout) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        parser(html)
+
+    # 1) 百度
+    if not items:
+        try:
+            _do_fetch(
+                f"https://www.baidu.com/s?wd={_ureq.quote(query)}&rn={max_results}", 8,
+                lambda html: [
+                    items.append({"title": _re.sub(r'<[^>]+>', '', m.group(2)).strip(), "url": m.group(1), "snippet": "", "source": "baidu"})
+                    for m in _re.finditer(r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, _re.DOTALL)
+                    if m.group(1).startswith("http") and "百度" not in _re.sub(r'<[^>]+>', '', m.group(2)).strip()
+                    and len(items) < max_results
+                ]
+            )
+        except Exception:
+            pass
+
+    # 2) cn.bing.com
+    if not items:
+        try:
+            _do_fetch(
+                f"https://cn.bing.com/search?q={_ureq.quote(query)}&count={max_results}&setlang=zh-cn", 8,
+                lambda html: [
+                    items.append({"title": _re.sub(r'<[^>]+>', '', m.group(2)).strip(), "url": m.group(1), "snippet": "", "source": "cn-bing"})
+                    for m in _re.finditer(r'<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>.*?<h2[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html, _re.DOTALL)
+                    if m.group(1).startswith("http") and _re.sub(r'<[^>]+>', '', m.group(2)).strip()
+                    and len(items) < max_results
+                ]
+            )
+        except Exception:
+            pass
+
+    # 3) 搜狗
+    if not items:
+        try:
+            _do_fetch(
+                f"https://www.sogou.com/web?query={_ureq.quote(query)}", 8,
+                lambda html: [
+                    items.append({"title": _re.sub(r'<[^>]+>', '', m.group(2)).strip(), "url": m.group(1), "snippet": "", "source": "sogou"})
+                    for m in _re.finditer(r'<a[^>]*href="([^"]+)"[^>]*id="[^"]*result[^"]*"[^>]*>(.*?)</a>', html, _re.DOTALL)
+                    if m.group(1).startswith("http") and "sogou.com" not in m.group(1)
+                    and _re.sub(r'<[^>]+>', '', m.group(2)).strip() and len(items) < max_results
+                ]
+            )
+        except Exception:
+            pass
+
+    # 4) DuckDuckGo
+    if not items:
+        try:
+            from duckduckgo_search import DDGS
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+            for r in results:
+                items.append({"title": r.get("title", ""), "url": r.get("href", ""),
+                              "snippet": (r.get("body", "") or "")[:300], "source": "ddg"})
+        except Exception:
+            pass
+
+    if not items:
+        return {"query": query, "results": [], "count": 0, "hint": "所有搜索引擎均无结果，请缩短关键词重试"}
+    return {"query": query, "results": items[:max_results], "count": len(items)}
+
+
+async def _web_fetch(url: str) -> dict:
+    """抓取指定URL的网页内容（进程内，不经过 MCP）"""
+    from urllib.parse import urlparse
+
+    # SSRF 防护
+    hostname = urlparse(url).hostname or ""
+    if not hostname:
+        return {"error": "无效的 URL", "url": url}
+    # 调用共享安全函数
+    is_safe, reason = _is_public_url(url)
+    if not is_safe:
+        return {"error": reason, "url": url}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers={"User-Agent": "AI-Agent/1.0"})
+            resp.raise_for_status()
+            text = resp.text[:8000]
+        return {"url": url, "content": text, "status_code": resp.status_code}
+    except Exception as e:
+        return {"error": str(e), "url": url}
+
+
+async def _stock_query(action: str = "top", market: str = "a", count: int = 10) -> dict:
+    """查询 A 股实时行情（进程内，不经过 MCP）"""
+    try:
+        import httpx
+
+        sort_map = {"top": "changepercent", "down": "changepercent", "volume": "volume"}
+        order_map = {"top": 0, "down": 1, "volume": 0}
+        market_nodes = {"a": "hs_a", "kcb": "kcb", "cyb": "cyb"}
+
+        node = market_nodes.get(market, "hs_a")
+        sort_field = sort_map.get(action, "changepercent")
+        asc = order_map.get(action, 0)
+
+        url = (
+            f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+            f"Market_Center.getHQNodeData?"
+            f"page=1&num={count}&sort={sort_field}&asc={asc}"
+            f"&node={node}&symbol=&_s_r_a=auto"
+        )
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://finance.sina.com.cn/",
+        }
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url, headers=headers)
+            data = resp.json()
+
+        stocks = []
+        for item in data:
+            stocks.append({
+                "code": item.get("code", ""),
+                "name": item.get("name", ""),
+                "price": float(item.get("trade", 0)),
+                "change_pct": float(item.get("changepercent", 0)),
+                "change_amount": float(item.get("pricechange", 0)),
+                "volume_hand": int(item.get("volume", 0)),
+                "turnover_yuan": int(item.get("amount", 0)),
+                "high": float(item.get("high", 0)),
+                "low": float(item.get("low", 0)),
+                "open": float(item.get("open", 0)),
+                "pre_close": float(item.get("settlement", 0)),
+            })
+
+        if not stocks:
+            return {"error": "stock_query仅覆盖A股（沪深/科创/创业板）",
+                    "hint": "该股票不在A股范围。请立即改用 web_search 搜索美股/港股行情", "stocks": []}
+
+        action_names = {"top": "涨幅榜", "down": "跌幅榜", "volume": "成交量榜"}
+        return {
+            "action": action_names.get(action, action),
+            "market": market,
+            "count": len(stocks),
+            "stocks": stocks[:count],
+        }
+    except Exception as e:
+        return {"error": str(e), "action": action,
+                "hint": "新浪接口可能暂时不可用，建议用 web_search 搜索股票行情替代"}
+
+
 # ── 本地工具注册表（供 lifespan 注册到 ToolRegistry）───────────────────
 
 LOCAL_TOOLS: list[Tool] = [
+    Tool(
+        name="web_search",
+        description="智能网页搜索。百度优先→cn.bing.com→搜狗→DuckDuckGo。查行情/新闻/最新信息自动多引擎兜底。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词。英文更精准，中文亦可。"},
+                "max_results": {"type": "integer", "description": "返回结果数，默认5，最多10"},
+                "fresh": {"type": "string", "description": "时效过滤: d(24h) / w(一周) / m(一月)。留空自动判断"},
+            },
+            "required": ["query"],
+        },
+        handler=_web_search,
+    ),
+    Tool(
+        name="web_fetch",
+        description="抓取指定URL的网页内容，返回页面文本。用于获取搜索结果的详情页面。含SSRF防护。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "要抓取的网页URL"},
+            },
+            "required": ["url"],
+        },
+        handler=_web_fetch,
+    ),
+    Tool(
+        name="stock_query",
+        description="查询A股实时行情。action='top'涨幅榜/'down'跌幅榜/'volume'成交量榜。市场: a=A股/kcb=科创板/cyb=创业板。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "查询类型: top(涨幅榜), down(跌幅榜), volume(成交量榜)"},
+                "market": {"type": "string", "description": "市场: a(A股), kcb(科创板), cyb(创业板)"},
+                "count": {"type": "integer", "description": "返回数量，默认10"},
+            },
+            "required": ["action"],
+        },
+        handler=_stock_query,
+    ),
     Tool(
         name="calculator",
         description="执行数学计算。支持基本运算、三角函数、对数等。",

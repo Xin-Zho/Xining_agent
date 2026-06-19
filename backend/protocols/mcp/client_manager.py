@@ -62,11 +62,6 @@ class MCPClientManager:
 
     def __init__(self, project_root: str):
         self._server_configs: dict[str, MCPServerConfig] = {
-            "network": MCPServerConfig(
-                cmd=[sys.executable, "-m", "backend.protocols.mcp.servers.network_server"],
-                env={"AGENT_PROJECT_ROOT": project_root},
-                session_count=2,
-            ),
             "filesystem-read": MCPServerConfig(
                 cmd=[sys.executable, "-m", "backend.protocols.mcp.servers.filesystem_read_server"],
                 env={"AGENT_PROJECT_ROOT": project_root},
