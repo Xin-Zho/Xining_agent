@@ -80,6 +80,7 @@ async def handle_execute_command(command: str, **kwargs) -> dict:
         result = await asyncio.to_thread(
             subprocess.run,
             args, shell=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             timeout=TOOL_TIMEOUT, cwd=PROJECT_ROOT,
         )
         output = result.stdout
