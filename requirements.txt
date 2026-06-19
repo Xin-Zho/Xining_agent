@@ -28,3 +28,5 @@ sentence-transformers>=3.0.0
 
 # MCP SDK (Anthropic)
 mcp~=1.9.0
+python-docx>=1.0.0
+openpyxl>=3.0.0

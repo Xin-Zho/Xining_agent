@@ -128,7 +128,7 @@ async def handle_create_excel(filename: str, data_json: str, **kwargs) -> dict:
         from urllib.parse import quote as _quote
         encoded_url = "/api/download/" + _quote(safe_name, safe='/')
         return {
-            "filename": safe_name, "file_type": "xlsx",
+            "ok": True, "filename": safe_name, "file_type": "xlsx",
             "size_bytes": size,
             "download_url": encoded_url,
             "clickable_link": f"[📥 下载 {safe_name}]({encoded_url})",
@@ -204,7 +204,7 @@ async def handle_create_docx(filename: str, markdown_content: str, **kwargs) -> 
         from urllib.parse import quote as _quote
         encoded_url = "/api/download/" + _quote(safe_name, safe='/')
         return {
-            "filename": safe_name, "file_type": "docx",
+            "ok": True, "filename": safe_name, "file_type": "docx",
             "size_bytes": size,
             "download_url": encoded_url,
             "clickable_link": f"[📥 下载 {safe_name}]({encoded_url})",
@@ -238,7 +238,7 @@ async def handle_create_document(filename: str, content: str, file_type: str = "
     from urllib.parse import quote as _quote
     encoded_url = "/api/download/" + _quote(safe_name, safe='/')
     return {
-        "filename": safe_name,
+        "ok": True, "filename": safe_name,
         "file_type": file_type,
         "size_bytes": size,
         "download_url": encoded_url,
@@ -273,6 +273,9 @@ async def call_tool(name: str, arguments: dict):
 
 
 async def main():
+    # 预热：提前导入重量级库，避免首次工具调用超时
+    import openpyxl
+    from docx import Document
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
