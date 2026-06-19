@@ -85,12 +85,13 @@ class AgentEngine:
         self._cancellations: set[int] = set()
         self._called_history: list[str] = []  # 防重复调用
         self._consecutive_failures: dict[str, int] = {}  # 连续失败计数（per tool）
-        # 预计算工具描述（缓存优化：每次 call_llm 复用同一段文本，不重算）
-        self._tool_desc = "Tools: " + ", ".join(
-            t.to_openai_schema()["function"]["name"] + "("
-            + t.to_openai_schema()["function"]["description"][:50] + ")"
-            for t in tools
-        ) if tools else ""
+        # 预计算工具参考（嵌入 system prompt 尾部，利用 prompt cache）
+        _tool_lines = []
+        for t in tools:
+            schema = t.to_openai_schema()["function"]
+            params = list(schema.get("parameters", {}).get("properties", {}).keys())
+            _tool_lines.append(f"- **{schema['name']}**({', '.join(params[:3])}): {schema['description'][:80]}")
+        self._tool_list = "## Tool Reference\n" + "\n".join(_tool_lines) if _tool_lines else ""
 
     async def run(self, task_description: str, user_id: int, task_id: int,
                   max_iterations: int = MAX_ITERATIONS):
@@ -117,9 +118,10 @@ class AgentEngine:
         mem_mgr = MemoryManager(user_id)
         self._mem_mgr = mem_mgr
         memory_context = await mem_mgr.get_context_for_prompt(task_description[:100])
-        system_prompt = AGENT_SYSTEM_PROMPT
+        # 拼接 system prompt：基础指令 + 工具参考 + 记忆上下文（单条消息，利于 prompt cache）
+        system_prompt = AGENT_SYSTEM_PROMPT + "\n\n" + self._tool_list
         if memory_context:
-            system_prompt = AGENT_SYSTEM_PROMPT + "\n\n" + memory_context
+            system_prompt = system_prompt + "\n\n" + memory_context
 
         tool_schemas = [t.to_openai_schema() for t in self.tools]
 
