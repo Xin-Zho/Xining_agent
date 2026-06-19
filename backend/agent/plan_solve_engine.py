@@ -386,17 +386,23 @@ class PlanSolveEngine:
             if len(cached_messages) < 2 or cached_messages[1].get("content", "")[:6] != "Tools:":
                 cached_messages.insert(1, {"role": "system", "content": self._tool_desc})
         kwargs = {
-            "model": "deepseek-chat",
+            "model": os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro"),
             "messages": cached_messages,
             "temperature": 0.7,
             "max_tokens": 4096,
         }
         if tools:
             kwargs["tools"] = tools
-        return await asyncio.to_thread(
-            self.deepseek.chat.completions.create,
-            **kwargs,
-        )
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.deepseek.chat.completions.create,
+                    **kwargs,
+                ),
+                timeout=300,
+            )
+        except asyncio.TimeoutError:
+            raise Exception("LLM 调用超时（300秒），请稍后重试或简化问题。")
 
     async def cancel(self, task_id: int):
         self._cancellations.add(task_id)

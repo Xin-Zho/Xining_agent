@@ -60,13 +60,19 @@ function renderSidebar() {
     el.appendChild(div);
   });
 
+  // Default agent item (no agent selected)
+  var defaultItem = document.querySelector('.agent-item[data-agent-id=""]');
+  if (defaultItem) {
+    defaultItem.classList.toggle('active', currentAgentId === null);
+  }
+
   // Agents
   var ael = document.getElementById('agentList');
   ael.innerHTML = '';
   agents.forEach(function(a) {
     var div = document.createElement('div');
     div.className = 'agent-item' + (a.id===currentAgentId?' active':'');
-    div.innerHTML = '<span>🤖</span><span class="title">'+U.esc(a.name)+'</span>';
+    div.innerHTML = '<span class="agent-icon">🤖</span><span class="title">'+U.esc(a.name)+'</span>';
     if (!String(a.id).startsWith('_builtin_')) {
       div.innerHTML += '<button class="del-btn" onclick="event.stopPropagation();App.deleteAgent(\''+a.id+'\')">×</button>';
     }

@@ -1,6 +1,7 @@
 """Agent 任务路由 — CRUD、确认、SSE 兼容流式、用户干预"""
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
@@ -15,6 +16,8 @@ from ..dependencies import (
 )
 
 router = APIRouter(prefix="/api", tags=["agent"])
+
+logger = logging.getLogger(__name__)
 
 
 # ── Legacy request model ──────────────────────────────────────────────
@@ -269,20 +272,41 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
                         continue
 
                     if s["status"] == "confirming":
+                        logger.info(f"[SSE] 发送确认请求: task={task_id} step={s['step_number']} tool={s['tool_name']}")
                         yield f"data: {json.dumps({'type': 'confirmation_required', 'task_id': task_id, 'step_num': s['step_number'], 'tool_name': s['tool_name'], 'args': s['tool_args']})}\n\n"
                         key = f"{task_id}_{s['step_number']}"
                         waited = 0
-                        while key not in ws_manager.confirmations and waited < 120:
+                        while True:
+                            confirm = ws_manager.confirmations.get(key)
+                            if confirm is not None:
+                                logger.info(f"[SSE] 确认已收到: key={key} approved={confirm.get('approved')}")
+                                break
+                            if waited >= 120:
+                                logger.warning(f"[SSE] 确认超时(60s): key={key}")
+                                break
+                            if bg_task.done():
+                                logger.warning(f"[SSE] 引擎任务已提前结束: key={key} waited={waited*0.5:.0f}s")
+                                break
                             await asyncio.sleep(0.5)
                             waited += 1
-                            if bg_task.done():
-                                break
-                        confirm = ws_manager.confirmations.pop(key, None)
+                        confirm = ws_manager.confirmations.get(key)
                         if confirm and confirm.get("approved"):
-                            yield f"data: {json.dumps({'type': 'step', 'step': {'turn': s['step_number'], 'type': 'tool_call', 'tool_name': s['tool_name'], 'thought': None, 'observation': '✅ 已允许执行'}})}\n\n"
+                            # 等待引擎执行工具并回写 DB，然后正常推送结果
+                            for _ in range(20):  # 最多等 10 秒
+                                await asyncio.sleep(0.5)
+                                conn2 = get_db("agent")
+                                updated = conn2.execute(
+                                    "SELECT * FROM agent_steps WHERE task_id=? AND step_number=?",
+                                    (task_id, s['step_number'])
+                                ).fetchone()
+                                conn2.close()
+                                if updated and updated['status'] in ('completed', 'failed', 'skipped'):
+                                    s = updated
+                                    break
+                            # 继续走下面的正常步骤推送（不 continue）
                         else:
                             yield f"data: {json.dumps({'type': 'step', 'step': {'turn': s['step_number'], 'type': 'tool_call', 'tool_name': s['tool_name'], 'thought': None, 'observation': '⛔ 已取消'}})}\n\n"
-                        continue
+                            continue
 
                     obs_text = ""
                     raw = s["tool_result"]
@@ -332,6 +356,11 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
                     }
                     yield f"data: {json.dumps({'type': 'step', 'step': step_data})}\n\n"
 
+            # 检查 bg_task 是否有异常
+            exc = bg_task.exception()
+            if exc:
+                logger.error(f"bg_task exception for task {task_id}: {exc}")
+
             conn = get_db("agent")
             task = conn.execute("SELECT * FROM agent_tasks WHERE id = ?", (task_id,)).fetchone()
             conn.close()
@@ -350,7 +379,9 @@ async def compat_agent_stream(req: LegacyAgentRequest, authorization: str | None
             yield f"data: {json.dumps({'done': True})}\n\n"
 
         except Exception as e:
+            logger.error(f"SSE generate exception for task {task_id}: {e}")
             yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
 
     return StreamingResponse(
         generate(), media_type="text/event-stream",

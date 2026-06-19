@@ -9,7 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/app.css?v=3">
+<link rel="stylesheet" href="/static/css/app.css?v=5">
 </head>
 <body>
 
@@ -25,13 +25,13 @@
         <div id="convList"></div>
       </div>
       <div class="sidebar-section">
-        <div class="sidebar-section-title">Agent</div>
+        <div class="sidebar-section-title">AGENT</div>
         <div class="agent-item" onclick="App.selectAgent(null)" data-agent-id="">
-          <span>🤖</span> <span class="title">默认助手</span>
+          <span class="agent-icon">🤖</span> <span class="title">默认助手</span>
         </div>
         <div id="agentList"></div>
-        <div class="agent-item" onclick="App.openAgentModal()" style="color:var(--accent)">
-          <span>＋</span> <span class="title">创建 Agent</span>
+        <div class="agent-item create-agent" onclick="App.openAgentModal()">
+          <span class="agent-icon">＋</span> <span class="title">创建 Agent</span>
         </div>
       </div>
     </div>
@@ -56,9 +56,9 @@
       <button class="hamburger" onclick="App.toggleSidebar()">☰</button>
       <span class="title">Xin</span>
       <span class="badge active" id="agentBadge" style="display:none">Agent</span>
-      <span id="headerSub" style="font-size:12px;color:var(--slate-5)"></span>
-      <button onclick="window.open('/downloads?token='+encodeURIComponent(App.userToken),'_blank')" title="下载文件" style="margin-left:auto;background:none;border:none;font-size:18px;cursor:pointer;padding:4px 8px">📥</button>
-      <select onchange="App.onAgentModeChange()" id="modeSelect" title="运行模式" style="font-weight:600">
+      <span id="headerSub" style="font-size:12px;color:var(--text-secondary)"></span>
+      <button onclick="window.open('/downloads?token='+encodeURIComponent(App.userToken),'_blank')" title="下载文件">📥</button>
+      <select onchange="App.onAgentModeChange()" id="modeSelect" title="运行模式">
         <option value="react">🤖 Agent</option>
         <option value="normal">💬 对话</option>
       </select>
@@ -68,7 +68,7 @@
     <div id="messages">
       <div id="emptyState">
         <div class="icon">💬</div>
-        <div>新建一个对话开始聊天</div>
+        <div class="text">新建一个对话开始聊天</div>
       </div>
     </div>
 
@@ -79,12 +79,14 @@
         <div class="bar-bg"><div class="bar-fill" style="width:0%"></div></div>
         <span id="tokenDetail" style="font-size:11px"></span>
       </div>
-      <div id="attachTags"></div>
-      <div id="inputRow">
-        <input type="file" id="fileInput" multiple hidden onchange="Chat.handleFileSelect(this.files)">
-        <button onclick="document.getElementById('fileInput').click()" style="background:none;border:none;font-size:18px;cursor:pointer;padding:8px" title="上传文件">📎</button>
-        <textarea id="msgInput" rows="1" placeholder="输入消息... (Shift+Enter 换行)" onkeydown="Chat.handleKeyDown(event)"></textarea>
-        <button id="sendBtn" onclick="Chat.sendMessage()">➤</button>
+      <div class="input-card">
+        <div id="attachTags"></div>
+        <div id="inputRow">
+          <input type="file" id="fileInput" multiple hidden onchange="Chat.handleFileSelect(this.files)">
+          <button onclick="document.getElementById('fileInput').click()" title="上传文件">📎</button>
+          <textarea id="msgInput" rows="1" placeholder="输入消息...（Shift+Enter 换行）" onkeydown="Chat.handleKeyDown(event)"></textarea>
+          <button id="sendBtn" onclick="Chat.sendMessage()">➤</button>
+        </div>
       </div>
     </div>
   </div>
@@ -106,7 +108,7 @@
   </div>
 </div>
 
-<!-- Auth Page — MUST be outside #app so it's visible when #app is hidden -->
+<!-- Auth Page -->
 <div id="authPage">
     <div class="auth-card">
       <h1 id="authTitle">登录</h1>
@@ -146,7 +148,7 @@
     <h3>⚠️ 确认工具执行</h3>
     <div id="confirmToolName" style="font-weight:600"></div>
     <div class="tool-info" id="confirmArgs"></div>
-    <div style="font-size:12px;color:var(--slate-5);margin-bottom:12px" id="confirmTimer">60s 后自动拒绝</div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px" id="confirmTimer">60s 后自动拒绝</div>
     <div class="actions">
       <button class="secondary-btn" onclick="Agent.confirmTool(false)">拒绝</button>
       <button class="primary-btn" onclick="Agent.confirmTool(true)">确认执行</button>
@@ -160,12 +162,12 @@
   <div id="changelogContent"></div>
 </div>
 
-<script src="/static/js/utils.js?v=3"></script>
-<script src="/static/js/auth.js?v=3"></script>
-<script src="/static/js/chat.js?v=3"></script>
-<script src="/static/js/agent.js?v=3"></script>
-<script src="/static/js/eval.js?v=3"></script>
-<script src="/static/js/app.js?v=3"></script>
+<script src="/static/js/utils.js?v=5"></script>
+<script src="/static/js/auth.js?v=5"></script>
+<script src="/static/js/chat.js?v=5"></script>
+<script src="/static/js/agent.js?v=5"></script>
+<script src="/static/js/eval.js?v=5"></script>
+<script src="/static/js/app.js?v=5"></script>
 
 </body>
 </html>

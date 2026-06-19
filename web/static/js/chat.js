@@ -25,7 +25,7 @@ function renderMessages() {
   var conv = getCurrentConv();
   msgs.innerHTML = '';
   if (!conv || !conv.messages || !conv.messages.length) {
-    msgs.innerHTML = '<div id="emptyState"><div class="icon">💬</div><div>新建一个对话开始聊天</div></div>';
+    msgs.innerHTML = '<div id="emptyState"><div class="icon">💬</div><div class="text">新建一个对话开始聊天</div></div>';
     return;
   }
   conv.messages.forEach(function(m) { addMsgToDOM(m.role, m.content); });
@@ -38,8 +38,26 @@ function addMsgToDOM(role, content) {
   var empty = document.getElementById('emptyState');
   if (empty) empty.remove();
 
+  // Wrapper row for alignment
+  var row = document.createElement('div');
+  row.className = 'msg-row ' + role;
+
+  // Assistant avatar + name
+  if (role === 'assistant') {
+    var avatarRow = document.createElement('div');
+    avatarRow.className = 'msg-avatar-row';
+    var agentName = '默认助手';
+    if (App.currentAgentId && App.agents) {
+      var ag = App.agents.find(function(a){ return a.id === App.currentAgentId; });
+      if (ag) agentName = ag.name;
+    }
+    avatarRow.innerHTML = '<div class="msg-avatar">🤖</div><div class="msg-name">'+U.esc(agentName)+'</div>';
+    row.appendChild(avatarRow);
+  }
+
+  // Message bubble
   var div = document.createElement('div');
-  div.className = 'msg ' + role;
+  div.className = 'msg-bubble ' + role;
 
   if (content && typeof content === 'string') {
     div.innerHTML = U.renderMarkdown(content);
@@ -60,16 +78,34 @@ function addMsgToDOM(role, content) {
     div.textContent = String(content || '');
   }
 
-  msgs.appendChild(div);
+  row.appendChild(div);
+  msgs.appendChild(row);
   U.scrollBottom();
   return div;
 }
 
 function addAssistantBubble() {
+  // Wrapper row
+  var row = document.createElement('div');
+  row.className = 'msg-row assistant';
+
+  // Avatar + name
+  var avatarRow = document.createElement('div');
+  avatarRow.className = 'msg-avatar-row';
+  var agentName = '默认助手';
+  if (App.currentAgentId && App.agents) {
+    var ag = App.agents.find(function(a){ return a.id === App.currentAgentId; });
+    if (ag) agentName = ag.name;
+  }
+  avatarRow.innerHTML = '<div class="msg-avatar">🤖</div><div class="msg-name">'+U.esc(agentName)+'</div>';
+  row.appendChild(avatarRow);
+
+  // Streaming bubble
   var div = document.createElement('div');
-  div.className = 'msg assistant';
+  div.className = 'msg-bubble assistant';
   div.id = 'streamingBubble';
-  document.getElementById('messages').appendChild(div);
+  row.appendChild(div);
+  document.getElementById('messages').appendChild(row);
   U.scrollBottom();
   return div;
 }
@@ -250,8 +286,8 @@ function handleSSEEvent(ev, conv, bubble, fullReply) {
           (ev.size_bytes ? ' <span style="font-size:12px;color:var(--slate-5)">('+ (ev.size_bytes > 1024 ? (ev.size_bytes/1024).toFixed(0)+'KB' : ev.size_bytes+'B') +')</span>' : '') +
           '</div>';
         var msgs = document.getElementById('messages');
-        var bubble = document.getElementById('streamingBubble');
-        if (bubble) { msgs.insertBefore(d, bubble); }
+        var bubbleEl = document.getElementById('streamingBubble');
+        if (bubbleEl && bubbleEl.parentNode) { msgs.insertBefore(d, bubbleEl.parentNode); }
         else { msgs.appendChild(d); }
       })();
       break;
@@ -268,6 +304,7 @@ function handleSSEEvent(ev, conv, bubble, fullReply) {
       break;
 
     case 'confirmation_required':
+      console.log('[SSE] 收到确认请求:', ev);
       Agent.showConfirmModal(ev);
       break;
 

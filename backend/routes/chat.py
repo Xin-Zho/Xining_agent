@@ -68,7 +68,7 @@ def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
 
     try:
         resp = deepseek.chat.completions.create(
-            model="deepseek-chat",
+            model=os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro"),
             messages=messages,
             temperature=0.7,
             max_tokens=4096,
@@ -87,7 +87,7 @@ def chat(body: ChatRequest, user: dict = Depends(get_current_user)):
 
     dialogue_logger.log(
         user=user["username"], question=body.message, answer=reply,
-        source="chat", model="deepseek-chat",
+        source="chat", model=os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro"),
         tokens=resp.usage.total_tokens if resp.usage else 0,
     )
 
@@ -104,7 +104,7 @@ async def chat_stream(req: dict | ChatRequest, authorization: str | None = Heade
 
     if isinstance(req, dict) and "messages" in req:
         messages = list(req["messages"])
-        model_id = "deepseek-reasoner" if req.get("model") == "reasoner" else "deepseek-chat"
+        model_id = "deepseek-reasoner" if req.get("model") == "reasoner" else os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro")
         user_msg = ""
         for m in reversed(messages):
             if m.get("role") == "user":
@@ -139,7 +139,7 @@ async def chat_stream(req: dict | ChatRequest, authorization: str | None = Heade
         for r in reversed(rows):
             messages.append({"role": r["role"], "content": r["content"]})
         user_msg = req.message
-        model_id = "deepseek-chat"
+        model_id = os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro")
     else:
         raise HTTPException(status_code=422, detail="无效的请求格式")
 
@@ -264,7 +264,7 @@ async def chat_stream_legacy(req: LegacyChatRequest):
         )
 
     cl = deepseek
-    model_id = "deepseek-reasoner" if req.model == "reasoner" else "deepseek-chat"
+    model_id = "deepseek-reasoner" if req.model == "reasoner" else os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro")
     compressed, token_info = ctx_manager.maybe_compress(req.messages)
 
     def generate():

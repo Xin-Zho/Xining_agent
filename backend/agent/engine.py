@@ -31,6 +31,7 @@ from ..evaluation.hooks import on_task_completed
 # Token 预算
 TOKEN_BUDGET = 90_000
 MAX_OBS_TOKENS = 2000
+LLM_MODEL = os.environ.get("LLM_MODEL_ID", "deepseek-chat")
 
 AGENT_SYSTEM_PROMPT = """You are an AI agent. You MUST use the provided function tools to answer. NEVER describe what tools you would use — actually call them via function calling.
 
@@ -606,7 +607,7 @@ class AgentEngine:
 
     async def _call_llm(self, messages: list[dict], tools: list[dict] = None):
         kwargs = {
-            "model": "deepseek-chat",
+            "model": LLM_MODEL,
             "messages": messages,
             "temperature": 0.7,
             "max_tokens": 4096,
@@ -647,7 +648,7 @@ class AgentEngine:
         })
 
         kwargs = {
-            "model": "deepseek-chat",
+            "model": LLM_MODEL,
             "messages": messages,
             "temperature": 0.7,
             "max_tokens": 4096,

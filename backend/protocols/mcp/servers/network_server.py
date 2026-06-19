@@ -8,6 +8,9 @@ PROJECT_ROOT = os.environ.get("AGENT_PROJECT_ROOT")
 if not PROJECT_ROOT:
     raise RuntimeError("AGENT_PROJECT_ROOT environment variable required")
 
+BING_API_KEY = os.environ.get("BING_API_KEY", "").strip()
+BING_ENABLED = bool(BING_API_KEY)
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool as MCPToolType, TextContent
@@ -126,6 +129,66 @@ async def handle_web_search(query: str, max_results: int = 5, fresh: str = "", *
                 if len(items) >= max_results: break
     except Exception:
         pass
+
+    # ── cn.bing.com 抓取兜底（国内直连，免 API Key）───
+    if not items:
+        try:
+            import urllib.request as _ureq_bing
+            cn_bing_url = f"https://cn.bing.com/search?q={_ureq_bing.quote(query)}&count={max_results}&setlang=zh-cn"
+            bing_req = _ureq_bing.Request(cn_bing_url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            with _ureq_bing.urlopen(bing_req, timeout=8) as resp:
+                bing_html = resp.read().decode("utf-8", errors="ignore")
+            for m in _re.finditer(r'<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>.*?<h2[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', bing_html, _re.DOTALL):
+                url = m.group(1)
+                title = _re.sub(r'<[^>]+>', '', m.group(2)).strip()
+                if url.startswith("http") and title:
+                    items.append({"title": title, "url": url, "snippet": "", "source": "cn-bing"})
+                    if len(items) >= max_results: break
+        except Exception:
+            pass
+
+    # ── 搜狗抓取兜底 ──────────
+    if not items:
+        try:
+            import urllib.request as _ureq_sg
+            sogou_url = f"https://www.sogou.com/web?query={_ureq_sg.quote(query)}"
+            sg_req = _ureq_sg.Request(sogou_url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            with _ureq_sg.urlopen(sg_req, timeout=8) as resp:
+                sg_html = resp.read().decode("utf-8", errors="ignore")
+            for m in _re.finditer(r'<a[^>]*href="([^"]+)"[^>]*id="[^"]*result[^"]*"[^>]*>(.*?)</a>', sg_html, _re.DOTALL):
+                url = m.group(1)
+                title = _re.sub(r'<[^>]+>', '', m.group(2)).strip()
+                if url.startswith("http") and title and "sogou.com" not in url:
+                    items.append({"title": title, "url": url, "snippet": "", "source": "sogou"})
+                    if len(items) >= max_results: break
+        except Exception:
+            pass
+
+    # ── Bing API 兜底（需 BING_API_KEY）──────────
+    if not items and BING_ENABLED:
+        try:
+            import urllib.request as _ureq2
+            bing_url = f"https://api.bing.microsoft.com/v7.0/search?q={_ureq2.quote(query)}&count={max_results}&mkt=zh-CN"
+            bing_req = _ureq2.Request(bing_url, headers={
+                "Ocp-Apim-Subscription-Key": BING_API_KEY,
+            })
+            with _ureq2.urlopen(bing_req, timeout=8) as resp:
+                bing_data = json.loads(resp.read().decode("utf-8"))
+            for page in (bing_data.get("webPages", {}).get("value", []) or []):
+                items.append({
+                    "title": page.get("name", ""),
+                    "url": page.get("url", ""),
+                    "snippet": (page.get("snippet", "") or "")[:300],
+                    "source": "bing",
+                })
+                if len(items) >= max_results:
+                    break
+        except Exception:
+            pass
 
     # ── DuckDuckGo 兜底 ────────
     if not items:

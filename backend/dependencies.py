@@ -40,11 +40,14 @@ def _has_valid_deepseek_key() -> bool:
 # ── Singletons ──────────────────────────────────────────────────────────
 
 import httpx as _httpx
-_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "120"))
+_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300"))
+_LLM_CONNECT_TIMEOUT = float(os.environ.get("LLM_CONNECT_TIMEOUT", "15"))
+_STEP_TIMEOUT = float(os.environ.get("STEP_TIMEOUT", "120"))
+_AGENT_STREAM_TIMEOUT = float(os.environ.get("AGENT_STREAM_TIMEOUT", "300"))
 deepseek = OpenAI(
     api_key=DEEPSEEK_API_KEY,
     base_url="https://api.deepseek.com",
-    timeout=_httpx.Timeout(_LLM_TIMEOUT, connect=10.0),
+    timeout=_httpx.Timeout(_LLM_TIMEOUT, connect=_LLM_CONNECT_TIMEOUT),
 ) if _has_valid_deepseek_key() else None
 
 ws_manager = WebSocketManager()

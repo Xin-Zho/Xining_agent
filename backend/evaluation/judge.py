@@ -52,7 +52,8 @@ Respond in Chinese, plain text only (no JSON, no markdown). Keep under 200 chara
 class LLMJudge:
     """LLM 评估器——使用 DeepSeek 作为评判模型"""
 
-    def __init__(self, model_id: str = "deepseek-chat"):
+    def __init__(self, model_id: str = None):
+        self.model_id = model_id or os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro"):
         self._model = model_id
         self._client = None  # lazy init
 

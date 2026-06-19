@@ -60,9 +60,13 @@ class ToolRegistry:
         )
 
     def get_all_tools(self) -> list[ToolProtocol]:
-        """返回 local + available MCP 工具"""
+        """返回 local + available MCP 工具，本地工具同名时屏蔽 MCP 版本"""
+        local_names = {t.name for t in self._local_tools}
         tools: list[ToolProtocol] = list(self._local_tools)
         for mcp_tool in self._mcp_tools:
+            if mcp_tool.name in local_names:
+                logger.info(f"MCP tool {mcp_tool.name} shadowed by local version, skipping")
+                continue
             if mcp_tool.available:
                 tools.append(mcp_tool)
             else:

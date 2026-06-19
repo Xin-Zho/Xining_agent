@@ -11,10 +11,10 @@ import httpx
 from openai import OpenAI
 
 LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-LLM_MODEL_ID = "deepseek-chat"
+LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro")
 LLM_REASONER_ID = "deepseek-reasoner"
 LLM_BASE_URL = "https://api.deepseek.com"
-LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "120"))
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "300"))
 
 
 def estimate_tokens(text: str) -> int:

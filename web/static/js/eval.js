@@ -146,40 +146,12 @@ async function loadRecommendations(el) {
           '<span style="color:var(--slate-5);font-size:12px">当前: '+U.esc(sc.current||'')+' → 建议: '+U.esc(sc.proposed||'')+'</span>'+
         '</div>';
 
-      if (r.status === 'pending') {
-        html += '<div class="actions">'+
-          '<button class="apply-btn" onclick="Eval.applyRec('+r.id+')">✅ 应用</button>'+
-          '<button class="dismiss-btn" onclick="Eval.dismissRec('+r.id+')">✕ 忽略</button>'+
-        '</div>';
-      } else {
-        html += '<span class="status '+r.status+'">'+ (r.status==='applied'?'✅ 已应用':'✕ 已忽略') +'</span>';
-      }
 
       html += '</div>';
     });
   }
 
   el.innerHTML = html;
-}
-
-// ── Actions ─────────────────────────────────────────────
-async function applyRec(id) {
-  try {
-    await fetch('/api/evaluation/recommendations/'+id+'/apply', {
-      method:'POST', headers: {'Authorization':'Bearer '+App.userToken}
-    });
-    U.toast('建议已应用 ✅','info');
-    loadTab('recommendations');
-  } catch(e) { U.toast('操作失败','error'); }
-}
-
-async function dismissRec(id) {
-  try {
-    await fetch('/api/evaluation/recommendations/'+id+'/dismiss', {
-      method:'POST', headers: {'Authorization':'Bearer '+App.userToken}
-    });
-    loadTab('recommendations');
-  } catch(e) { U.toast('操作失败','error'); }
 }
 
 // ── Helper ──────────────────────────────────────────────
@@ -189,6 +161,6 @@ function card(label, value, cls) {
 
 return {
   open:open, close:close, switchTab:switchTab,
-  loadTab:loadTab, applyRec:applyRec, dismissRec:dismissRec,
+  loadTab:loadTab,
 };
 })();
