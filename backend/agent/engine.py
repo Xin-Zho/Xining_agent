@@ -171,19 +171,25 @@ class AgentEngine:
                 # 如果 LLM 调了工具，执行并追答
                 msg = direct_resp.choices[0].message
                 if msg.tool_calls:
+                    step_number = 0
                     for tc in msg.tool_calls[:2]:  # 最多2个工具
+                        step_number += 1
                         tool = self.tool_map.get(tc.function.name)
                         if tool:
                             try:
                                 args = json.loads(tc.function.arguments)
                             except json.JSONDecodeError:
                                 args = {}
+                            # 保存步骤记录（SSE 流需要此记录来检测确认状态）
+                            _save_step(task_id, step_number, "tool_call",
+                                       status="running", tool_name=tool.name, tool_args=args)
                             # assistant 消息必须在 tool 消息之前（API 要求）
                             tc_block = {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
                             direct_messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": [tc_block]})
                             try:
                                 obs = await self._execute_tool_with_retry(
                                     tool, args, tool.name, max_retries=3,
+                                    step_num=step_number,
                                 )
                                 obs_str = json.dumps(obs, ensure_ascii=False)[:2000]
                                 direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": obs_str})
