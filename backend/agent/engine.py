@@ -609,16 +609,21 @@ class AgentEngine:
             return "pass"
 
     async def _call_llm(self, messages: list[dict], tools: list[dict] = None):
+        """统一流式调用：stream=True 收集全部 chunk 后拼成完整 response 返回。
+        与 _call_llm_streaming 共享 DeepSeek prompt cache。
+        """
         kwargs = {
             "model": LLM_MODEL,
             "messages": messages,
             "temperature": 0.7,
             "max_tokens": 4096,
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools:
             kwargs["tools"] = tools
         try:
-            return await asyncio.wait_for(
+            stream = await asyncio.wait_for(
                 asyncio.to_thread(
                     self.deepseek.chat.completions.create,
                     **kwargs,
@@ -626,8 +631,46 @@ class AgentEngine:
                 timeout=LLM_CALL_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            logger.error(f"LLM non-streaming timed out after {LLM_CALL_TIMEOUT}s")
+            logger.error(f"LLM streaming timed out after {LLM_CALL_TIMEOUT}s")
             raise Exception(f"LLM 调用超时（{LLM_CALL_TIMEOUT}秒），请稍后重试或简化问题。")
+
+        # 收集流式 chunk，拼成非流式 response 对象
+        collected_content = ""
+        collected_tool_calls = []
+        usage = type('Usage', (), {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0})()
+
+        for chunk in stream:
+            if chunk.usage:
+                for k in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+                    setattr(usage, k, getattr(usage, k) + getattr(chunk.usage, k, 0))
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                collected_content += delta.content
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    while len(collected_tool_calls) <= tc.index:
+                        collected_tool_calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+                    entry = collected_tool_calls[tc.index]
+                    if tc.id:
+                        entry["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            entry["function"]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            entry["function"]["arguments"] += tc.function.arguments
+
+        choice = type('Choice', (), {
+            'message': type('Message', (), {
+                'content': collected_content or None,
+                'tool_calls': collected_tool_calls or None,
+            })(),
+        })()
+        return type('Response', (), {
+            'choices': [choice],
+            'usage': usage,
+        })()
 
     async def _call_llm_streaming(self, messages: list[dict], tools: list[dict] = None):
         """
