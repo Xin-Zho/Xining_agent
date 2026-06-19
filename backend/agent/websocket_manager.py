@@ -75,6 +75,7 @@ def _update_step(
     tool_result: dict = None,
     duration_ms: int = None,
     tool_args: dict = None,
+    tool_name: str = None,
 ):
     conn = get_db("agent")
     if tool_result is not None and tool_args is not None:

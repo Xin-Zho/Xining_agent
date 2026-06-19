@@ -75,9 +75,11 @@ async def handle_execute_command(command: str, **kwargs) -> dict:
             return {"error": f"检测到危险操作 '{d}'，已阻止"}
 
     try:
+        # shell=True: Windows 用 cmd.exe /c，Unix 用 /bin/sh -c
+        # 使 echo/dir/type 等 shell builtin 都能正常执行
         result = await asyncio.to_thread(
             subprocess.run,
-            args, shell=False, capture_output=True, text=True,
+            args, shell=True, capture_output=True, text=True,
             timeout=TOOL_TIMEOUT, cwd=PROJECT_ROOT,
         )
         output = result.stdout

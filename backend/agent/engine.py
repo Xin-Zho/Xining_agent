@@ -51,9 +51,11 @@ AGENT_SYSTEM_PROMPT = """You are an AI agent. You MUST use the provided function
 1. CALL tools via function calling — do NOT write tool calls as text or code blocks.
 2. Batch multiple independent tool calls in ONE response.
 3. If a tool fails or returns empty, immediately try web_search as fallback.
-4. Max 5 rounds of tool calls. After 2-3 rounds, synthesize the data and write your final answer.
-5. Final answer: Markdown tables with source URLs. Download links use /api/download/ format.
-6. Think in English, answer in Chinese."""
+4. Max 5 rounds. After round 3 you MUST stop calling tools and write a final answer based on available data, even if incomplete. Never exceed 3 rounds unless critical data is completely missing.
+5. Batch independent tool calls into ONE round — do not spread them across rounds.
+6. If a tool fails, try the fallback ONCE. If it fails again, move on without it.
+7. Final answer: Markdown tables with source URLs. Download links use /api/download/ format.
+8. Think in English, answer in Chinese."""
 
 REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。
@@ -64,7 +66,8 @@ REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
 评估："""
 
 MAX_ITERATIONS = 5
-STEP_TIMEOUT = 60
+STEP_TIMEOUT = 120
+LLM_CALL_TIMEOUT = 300
 
 
 class AgentEngine:
@@ -79,6 +82,7 @@ class AgentEngine:
         self.intervention = intervention
         self._cancellations: set[int] = set()
         self._called_history: list[str] = []  # 防重复调用
+        self._consecutive_failures: dict[str, int] = {}  # 连续失败计数（per tool）
         # 预计算工具描述（缓存优化：每次 call_llm 复用同一段文本，不重算）
         self._tool_desc = "Tools: " + ", ".join(
             t.to_openai_schema()["function"]["name"] + "("
@@ -90,6 +94,7 @@ class AgentEngine:
                   max_iterations: int = MAX_ITERATIONS):
         start_time = time.time()
         self._called_history = []
+        self._consecutive_failures = {}  # 每任务重置连续失败计数
         self._current_task_id = task_id  # 供 _execute_tool 使用
         self._current_step_num = 0       # 供 _execute_tool 使用
         task_id_str = str(task_id)
@@ -154,64 +159,80 @@ class AgentEngine:
 
         if is_simple:
             print(f"[ENGINE] Taking SIMPLE path for task {task_id}", flush=True)
-            direct_messages = [
-                {"role": "system", "content": "你是一个智能聊天助手。直接回答用户的问题，不要提'任务'或'完成'。用自然的口语。可以用工具查事实但要快。用中文回答。"},
-                {"role": "user", "content": raw_question},
-            ]
-            direct_resp = await self._call_llm(direct_messages, tool_schemas if len(raw_question) > 20 else None)
-            total_tokens = (direct_resp.usage.total_tokens if direct_resp.usage else 0)
-            final_answer = direct_resp.choices[0].message.content or ""
+            try:
+                direct_messages = [
+                    {"role": "system", "content": "你是一个智能聊天助手。直接回答用户的问题，不要提'任务'或'完成'。用自然的口语。可以用工具查事实但要快。用中文回答。"},
+                    {"role": "user", "content": raw_question},
+                ]
+                direct_resp = await self._call_llm(direct_messages, tool_schemas if len(raw_question) > 20 else None)
+                total_tokens = (direct_resp.usage.total_tokens if direct_resp.usage else 0)
+                final_answer = direct_resp.choices[0].message.content or ""
 
-            # 如果 LLM 调了工具，执行并追答
-            msg = direct_resp.choices[0].message
-            if msg.tool_calls:
-                for tc in msg.tool_calls[:2]:  # 最多2个工具
-                    tool = self.tool_map.get(tc.function.name)
-                    if tool:
-                        try:
-                            args = json.loads(tc.function.arguments)
-                        except json.JSONDecodeError:
-                            args = {}
-                        try:
-                            obs = await self._execute_tool_with_retry(
-                                tool, args, tool.name, max_retries=3,
-                            )
-                            obs_str = json.dumps(obs, ensure_ascii=False)[:2000]
-                            direct_messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}]})
-                            direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": obs_str})
-                        except Exception as e:
-                            direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"Error: {e}"})
-                final_resp = await self._call_llm(direct_messages, None)
-                total_tokens += (final_resp.usage.total_tokens if final_resp.usage else 0)
-                final_answer = final_resp.choices[0].message.content or final_answer
+                # 如果 LLM 调了工具，执行并追答
+                msg = direct_resp.choices[0].message
+                if msg.tool_calls:
+                    for tc in msg.tool_calls[:2]:  # 最多2个工具
+                        tool = self.tool_map.get(tc.function.name)
+                        if tool:
+                            try:
+                                args = json.loads(tc.function.arguments)
+                            except json.JSONDecodeError:
+                                args = {}
+                            # assistant 消息必须在 tool 消息之前（API 要求）
+                            tc_block = {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                            direct_messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": [tc_block]})
+                            try:
+                                obs = await self._execute_tool_with_retry(
+                                    tool, args, tool.name, max_retries=3,
+                                )
+                                obs_str = json.dumps(obs, ensure_ascii=False)[:2000]
+                                direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": obs_str})
+                            except Exception as e:
+                                direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"Error: {e}"})
+                    final_resp = await self._call_llm(direct_messages, None)
+                    total_tokens += (final_resp.usage.total_tokens if final_resp.usage else 0)
+                    final_answer = final_resp.choices[0].message.content or final_answer
 
-            if not final_answer.strip():
-                final_answer = "你好！有什么可以帮你的？"
+                if not final_answer.strip():
+                    final_answer = "你好！有什么可以帮你的？"
 
-            # 简单路径也保存记忆（过滤纯闲聊）
-            if len(final_answer) > 30 and not any(w == raw_question for w in ["你好", "谢谢", "再见", "OK", "Hi", "hi"]):
-                try:
-                    await self._mem_mgr.add(
-                        content=f"Q: {raw_question[:80]}\nA: {final_answer[:200]}",
-                        memory_type="episodic",
-                        importance=0.4,
-                    )
-                except Exception:
-                    pass
+                # 简单路径也保存记忆（过滤纯闲聊）
+                if len(final_answer) > 30 and not any(w == raw_question for w in ["你好", "谢谢", "再见", "OK", "Hi", "hi"]):
+                    try:
+                        await self._mem_mgr.add(
+                            content=f"Q: {raw_question[:80]}\nA: {final_answer[:200]}",
+                            memory_type="episodic",
+                            importance=0.4,
+                        )
+                    except Exception:
+                        pass
 
-            duration_ms = int((time.time() - start_time) * 1000)
-            _update_task(task_id, status="completed", final_answer=final_answer,
-                         total_tokens=total_tokens, duration_ms=duration_ms)
-            await self.ws.broadcast(task_id, "task_complete", {
-                "final_answer": final_answer,
-                "total_steps": 1,
-                "total_tokens": total_tokens,
-                "duration_ms": duration_ms,
-            })
-            asyncio.create_task(on_task_completed(task_id))
-            if self.intervention:
-                await self.intervention.complete_task(task_id_str)
-            return
+                duration_ms = int((time.time() - start_time) * 1000)
+                _update_task(task_id, status="completed", final_answer=final_answer,
+                             total_tokens=total_tokens, duration_ms=duration_ms)
+                await self.ws.broadcast(task_id, "task_complete", {
+                    "final_answer": final_answer,
+                    "total_steps": 1,
+                    "total_tokens": total_tokens,
+                    "duration_ms": duration_ms,
+                })
+                asyncio.create_task(on_task_completed(task_id))
+                if self.intervention:
+                    await self.intervention.complete_task(task_id_str)
+                return
+            except Exception as e:
+                logger.error(f"Simple path failed for task {task_id}: {e}")
+                error_msg = f"处理失败: {str(e)}"
+                _update_task(task_id, status="failed", final_answer=error_msg,
+                             total_tokens=0, duration_ms=int((time.time() - start_time) * 1000))
+                await self.ws.broadcast(task_id, "task_error", {
+                    "error": error_msg,
+                    "last_step": 0,
+                })
+                asyncio.create_task(on_task_completed(task_id))
+                if self.intervention:
+                    await self.intervention.complete_task(task_id_str)
+                return
 
         print(f"[ENGINE] Taking COMPLEX path for task {task_id}, system_prompt_len={len(system_prompt)}", flush=True)
         messages = [
@@ -356,8 +377,31 @@ class AgentEngine:
 
                     call_tasks.append((tc, tool_name, arguments))
 
+                # ── 并行调用上限：每轮最多 3 个 ──────────
+                MAX_PARALLEL = 3
+                overflow = call_tasks[MAX_PARALLEL:]
+                call_tasks = call_tasks[:MAX_PARALLEL]
+                for tc, tool_name, arguments in overflow:
+                    call_tasks.append((tc, tool_name, {"__blocked__": True, "__reason__": f"本轮并行已达上限（{MAX_PARALLEL}），排队到下一轮"}))
+
+                # ── 构建执行任务（含正确的 step_num）─────
+                exec_tasks = []
+                for i, (tc, tool_name, arguments) in enumerate(call_tasks):
+                    sn = step_number + 1 + i
+                    if not arguments.get("__blocked__"):
+                        self._current_step_num = sn
+                        _save_step(task_id, sn, "tool_call", status="running",
+                                   tool_name=tool_name, tool_args=arguments)
+                        await self.ws.broadcast(task_id, "step_start", {
+                            "step_num": sn,
+                            "type": "tool_call",
+                            "tool_name": tool_name,
+                            "args": arguments,
+                        })
+                    exec_tasks.append((tc, tool_name, arguments, sn))
+
                 # ── 并行执行工具 ─────────────────────────
-                async def exec_one(tc, tool_name, arguments):
+                async def exec_one(tc, tool_name, arguments, step_num):
                     if arguments.get("__blocked__"):
                         return tc.id, {"error": f"工具调用已被阻止：{arguments.get('__reason__', '重复调用')}"}
 
@@ -368,40 +412,24 @@ class AgentEngine:
                     if not tool:
                         return tc.id, {"error": f"未知工具: {tool_name}"}
 
-                    # WebSocket 推送工具调用开始
-                    step_start_num = step_number + call_tasks.index((tc, tool_name, arguments)) + 1
-                    if step_start_num <= step_number + len(call_tasks):
-                        pass  # step number tracking handled below
+                    # 连续失败检查：同一工具连续失败 2 次则本轮跳过
+                    if self._consecutive_failures.get(tool_name, 0) >= 2:
+                        return tc.id, {"error": f"工具 '{tool_name}' 连续失败 2 次，本轮跳过，请换用其他工具"}
 
                     tool_start = time.time()
                     try:
                         result = await self._execute_tool_with_retry(
                             tool, arguments, tool_name, max_retries=3,
+                            step_num=step_num,
                         )
                         duration = int((time.time() - tool_start) * 1000)
                         return tc.id, {"result": result, "duration_ms": duration, "tool_name": tool_name}
                     except Exception as e:
                         return tc.id, {"error": str(e), "tool_name": tool_name}
 
-                # 记录工具调用步骤（确认拦截已在 _execute_tool 中处理）
-                for i, (tc, tool_name, arguments) in enumerate(call_tasks):
-                    if arguments.get("__blocked__"):
-                        continue
-                    sn = step_number + 1 + i
-                    self._current_step_num = sn
-
-                    _save_step(task_id, sn, "tool_call", status="running",
-                               tool_name=tool_name, tool_args=arguments)
-                    await self.ws.broadcast(task_id, "step_start", {
-                        "step_num": sn,
-                        "type": "tool_call",
-                        "tool_name": tool_name,
-                        "args": arguments,
-                    })
-
                 # 并行等待所有工具完成
                 results = {}
-                tasks = [exec_one(tc, tn, args) for tc, tn, args in call_tasks]
+                tasks = [exec_one(tc, tn, args, sn) for tc, tn, args, sn in exec_tasks]
                 completed = await asyncio.gather(*tasks)
 
                 for tc_id, result_data in completed:
@@ -434,10 +462,15 @@ class AgentEngine:
                         observation = self._smart_truncate(json.dumps(raw_obs, ensure_ascii=False))
                         duration = result_data.get("duration_ms", 0)
                         status = "completed"
+                        # 成功：重置连续失败计数
+                        self._consecutive_failures[tool_name] = 0
                     else:
                         observation = result_data.get("error", "未知错误")
                         duration = 0
                         status = "failed"
+                        # 非阻塞类失败：递增连续失败计数
+                        if not arguments.get("__blocked__"):
+                            self._consecutive_failures[tool_name] = self._consecutive_failures.get(tool_name, 0) + 1
 
                     # 失败提示
                     if any(w in observation for w in ["失败", "错误", "超时", "不支持", "安全限制", "异常", "阻止"]):
@@ -574,10 +607,17 @@ class AgentEngine:
         }
         if tools:
             kwargs["tools"] = tools
-        return await asyncio.to_thread(
-            self.deepseek.chat.completions.create,
-            **kwargs,
-        )
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.deepseek.chat.completions.create,
+                    **kwargs,
+                ),
+                timeout=LLM_CALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(f"LLM non-streaming timed out after {LLM_CALL_TIMEOUT}s")
+            raise Exception(f"LLM 调用超时（{LLM_CALL_TIMEOUT}秒），请稍后重试或简化问题。")
 
     async def _call_llm_streaming(self, messages: list[dict], tools: list[dict] = None):
         """
@@ -606,6 +646,7 @@ class AgentEngine:
             "temperature": 0.7,
             "max_tokens": 4096,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools:
             kwargs["tools"] = tools
@@ -647,11 +688,58 @@ class AgentEngine:
 
         try:
             content_parts, tool_call_chunks, total_tokens = await asyncio.wait_for(
-                _stream_and_collect(), timeout=120.0
+                _stream_and_collect(), timeout=LLM_CALL_TIMEOUT
             )
         except asyncio.TimeoutError:
-            logger.error(f"LLM streaming timed out after 120s for task {task_id}")
-            raise Exception("LLM call timed out after 120 seconds")
+            logger.error(f"LLM streaming timed out after {LLM_CALL_TIMEOUT}s for task {task_id}")
+            # 降级：尝试非流式调用
+            try:
+                tools_arg = kwargs.get("tools")
+                fallback = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.deepseek.chat.completions.create,
+                        model=kwargs["model"],
+                        messages=kwargs["messages"],
+                        temperature=kwargs["temperature"],
+                        max_tokens=kwargs["max_tokens"],
+                        tools=tools_arg,
+                    ),
+                    timeout=LLM_CALL_TIMEOUT,
+                )
+                msg = fallback.choices[0].message
+                thinking_text = msg.content or ""
+                await self.ws.broadcast(task_id, "thinking_end", {
+                    "content": thinking_text[:500],
+                })
+                if thinking_text.strip():
+                    _save_step(task_id, self._current_step_num, "thinking",
+                                   status="completed", thought=thinking_text[:2000])
+                # 重建 tool_calls
+                tool_calls = []
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        tool_calls.append(type('ToolCall', (), {
+                            'id': tc.id,
+                            'type': 'function',
+                            'function': type('Function', (), {
+                                'name': tc.function.name,
+                                'arguments': tc.function.arguments,
+                            }),
+                        }))
+                message = type('Message', (), {
+                    'content': thinking_text,
+                    'tool_calls': tool_calls if tool_calls else None,
+                })()
+                choice = type('Choice', (), {'message': message})()
+                usage = type('Usage', (), {
+                    'total_tokens': getattr(fallback.usage, 'total_tokens', 0) if fallback.usage else 0,
+                    'prompt_tokens': 0,
+                    'completion_tokens': 0,
+                })()
+                return type('Response', (), {'choices': [choice], 'usage': usage})()
+            except Exception as e2:
+                logger.error(f"Fallback LLM call also failed: {e2}")
+                raise Exception(f"LLM 调用超时（{LLM_CALL_TIMEOUT}秒）且降级失败，请稍后重试。")
 
         thinking_text = "".join(content_parts)
         await self.ws.broadcast(task_id, "thinking_end", {
@@ -770,38 +858,39 @@ class AgentEngine:
 
         return compressed
 
-    async def _execute_tool(self, tool: ToolProtocol, args: dict) -> dict:
+    async def _execute_tool(self, tool: ToolProtocol, args: dict, step_num: int = 0) -> dict:
         """执行工具调用，确认检查在主进程拦截"""
         if tool.require_confirmation:
-            # 引擎侧拦截：MCP Server 不执行确认检查
-            # 复用现有 ws_manager.confirmations 机制
-            step_key = f"{self._current_task_id}_{self._current_step_num}"
-            _save_step(self._current_task_id, self._current_step_num, "tool_call",
-                       status="confirming", tool_name=tool.name, tool_args=args)
+            # 使用传入的 step_num，不用 self._current_step_num（并行调用时会错乱）
+            sn = step_num or self._current_step_num
+            # 更新已有步骤状态（主循环已通过 _save_step 创建），不重复插入
+            _update_step(self._current_task_id, sn, "confirming",
+                         tool_name=tool.name, tool_args=args)
             await self.ws.broadcast(self._current_task_id, "confirmation_required", {
-                "step_num": self._current_step_num,
+                "step_num": sn,
                 "tool_name": tool.name,
                 "args": args,
             })
             confirmed = await self._wait_for_confirmation(
-                self._current_task_id, self._current_step_num,
+                self._current_task_id, sn,
             )
             if not confirmed:
-                _update_step(self._current_task_id, self._current_step_num, "skipped",
+                _update_step(self._current_task_id, sn, "skipped",
                              tool_result={"msg": "用户取消执行"}, duration_ms=0)
                 await self.ws.broadcast(self._current_task_id, "step_complete", {
-                    "step_num": self._current_step_num, "type": "tool_call",
+                    "step_num": sn, "type": "tool_call",
                     "tool_name": tool.name, "result": "⛔ 已取消",
                 })
                 return {"status": "rejected", "message": "User denied confirmation"}
             else:
-                _update_step(self._current_task_id, self._current_step_num, "running",
+                _update_step(self._current_task_id, sn, "running",
                              tool_args=args)
 
         return await tool.handler(**args)
 
     async def _execute_tool_with_retry(self, tool: ToolProtocol, args: dict,
-                                       tool_name: str, max_retries: int = 3) -> dict:
+                                       tool_name: str, max_retries: int = 3,
+                                       step_num: int = 0) -> dict:
         """
         带指数退避的工具执行重试。
 
@@ -809,13 +898,13 @@ class AgentEngine:
         Backoff: 1s → 2s → 4s
         """
         task_id = getattr(self, '_current_task_id', 0)
-        step_num = getattr(self, '_current_step_num', 0)
+        _sn = step_num or getattr(self, '_current_step_num', 0)
 
         last_error = None
         for attempt in range(max_retries + 1):
             try:
                 result = await asyncio.wait_for(
-                    self._execute_tool(tool, dict(args)),
+                    self._execute_tool(tool, dict(args), step_num=_sn),
                     timeout=STEP_TIMEOUT,
                 )
                 if attempt > 0 and task_id:
@@ -860,8 +949,10 @@ class AgentEngine:
         """等待用户确认工具执行，最长 60 秒"""
         key = f"{task_id}_{step_num}"
         for _ in range(120):  # 60 秒，每 0.5 秒检查
-            confirm = self.ws.confirmations.pop(key, None)
+            confirm = self.ws.confirmations.get(key)
             if confirm is not None:
+                # 标记已处理，避免 SSE 流竞争
+                self.ws.confirmations[key] = {"approved": confirm.get("approved", False), "handled": True}
                 return confirm.get("approved", False)
             await asyncio.sleep(0.5)
         return False  # 超时默认拒绝
