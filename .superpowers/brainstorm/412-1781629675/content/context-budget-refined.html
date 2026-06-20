@@ -1,0 +1,88 @@
+<h2>上下文窗口策略（修正）</h2>
+<p class="subtitle">不固定配额 · 时间分窗 · 同会话不丢 · 总量兜底</p>
+
+<div class="section">
+  <h3>🕐 时间分窗策略</h3>
+  <div class="mockup">
+    <div class="mockup-header">同一会话内的对话历史处理</div>
+    <div class="mockup-body">
+      <div style="display: flex; width: 100%; height: 40px; border-radius: 6px; overflow: hidden; margin-bottom: 12px;">
+        <div style="width: 15%; background: #45A884; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px;">完整保留</div>
+        <div style="width: 55%; background: #E07040; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px;">压缩摘要（不丢弃）</div>
+        <div style="width: 30%; background: #A0A0A0; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px;">超阈值 → 全量压缩</div>
+      </div>
+      <table style="width:100%; border-collapse: collapse; font-size:12px; text-align:left;">
+        <tr style="border-bottom:2px solid #E5E7EB;"><th style="padding:6px;">区域</th><th style="padding:6px;">条件</th><th style="padding:6px;">处理</th><th style="padding:6px;">示例</th></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:6px;"><strong>热窗口</strong></td><td style="padding:6px;">最近 3~5 min 内</td><td style="padding:6px;">完整保留原文</td><td style="padding:6px;">正在追问、纠错、连续指令</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:6px;"><strong>温窗口</strong></td><td style="padding:6px;">同会话，超过 5 min</td><td style="padding:6px;">LLM 摘要压缩，保留关键信息</td><td style="padding:6px;">10分钟前的搜索结果、已完成的子任务</td></tr>
+        <tr><td style="padding:6px;"><strong>压缩触发</strong></td><td style="padding:6px;">历史 tokens &gt; HISTORY_BUDGET</td><td style="padding:6px;">把所有已压缩摘要 + 温窗口 → 再压成一段</td><td style="padding:6px;">超长会话（50+轮），兜底保护</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>🔄 完整流程</h3>
+  <div class="mockup">
+    <div class="mockup-header">ContextBuilder.build() 逻辑</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 2; text-align: left;">
+      <span style="color:#5B6AF0;">def build(messages, memories, hot_window_sec=180):</span><br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#888;"># 1. 切分对话历史</span><br>
+      &nbsp;&nbsp;now = time.time()<br>
+      &nbsp;&nbsp;hot_msgs &nbsp;= [m for m in messages if now - m.ts &lt; hot_window_sec] &nbsp;<span style="color:#888;">← 完整保留</span><br>
+      &nbsp;&nbsp;warm_msgs = [m for m in messages if now - m.ts &ge; hot_window_sec] &nbsp;<span style="color:#888;">← 待压缩</span><br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#888;"># 2. 压缩温窗口（同一会话，不丢弃）</span><br>
+      &nbsp;&nbsp;if warm_msgs:<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;summary = llm.summarize(warm_msgs) &nbsp;&nbsp;<span style="color:#888;">← 生成摘要</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;compressed_block = f"[会话早期摘要]\n{summary}"<br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#888;"># 3. Token 总量检查（兜底）</span><br>
+      &nbsp;&nbsp;total = estimate_tokens(system) + estimate_tokens(memories)<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;+ estimate_tokens(hot_msgs) + estimate_tokens(compressed_block)<br>
+      &nbsp;&nbsp;if total > HISTORY_BUDGET: &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#888;">← 兜底阈值</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;compressed_block = llm.summarize(compressed_block + hot_msgs[:-2])<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;hot_msgs = hot_msgs[-2:] &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color:#888;">← 只保留最近2轮</span><br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#888;"># 4. 记忆上下文</span><br>
+      &nbsp;&nbsp;mem_ctx = MemoryManager.search(query, top_k=5)<br>
+      &nbsp;&nbsp;if estimate_tokens(mem_ctx) > total * 0.15: &nbsp;<span style="color:#888;">← 不超过总预算 15%</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;mem_ctx = mem_ctx.truncate_to(total * 0.15)<br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#888;"># 5. 组装</span><br>
+      &nbsp;&nbsp;return [system] + [mem_ctx] + [compressed_block] + hot_msgs + [task]
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>⚙️ 可配置参数</h3>
+  <div class="mockup">
+    <div class="mockup-header">MemoryConfig 新增字段</div>
+    <div class="mockup-body">
+      <table style="width:100%; border-collapse: collapse; font-size:13px; text-align:left;">
+        <tr style="border-bottom:2px solid #E5E7EB;"><th style="padding:8px;">参数</th><th style="padding:8px;">默认值</th><th style="padding:8px;">含义</th></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">hot_window_sec</td><td style="padding:8px;">180</td><td style="padding:8px;">热窗口时长（秒），3分钟</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">history_budget_tokens</td><td style="padding:8px;">90_000</td><td style="padding:8px;">兜底触发阈值，超了就全量压缩</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">memory_context_max_ratio</td><td style="padding:8px;">0.15</td><td style="padding:8px;">记忆上下文占预算最大比例</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">keep_min_hot_rounds</td><td style="padding:8px;">2</td><td style="padding:8px;">兜底压缩后最少保留的轮数</td></tr>
+        <tr><td style="padding:8px;">max_memory_items</td><td style="padding:8px;">5</td><td style="padding:8px;">检索记忆的最大条数</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>📊 三种场景对比</h3>
+  <div class="mockup">
+    <div class="mockup-body">
+      <table style="width:100%; border-collapse: collapse; font-size:13px; text-align:left;">
+        <tr style="border-bottom:2px solid #E5E7EB;"><th style="padding:8px;">场景</th><th style="padding:8px;">热窗口</th><th style="padding:8px;">温窗口</th><th style="padding:8px;">兜底压缩</th></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">短会话（5轮，2分钟）</td><td style="padding:8px;">全部保留</td><td style="padding:8px;">无</td><td style="padding:8px;">不触发</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">中会话（20轮，15分钟）</td><td style="padding:8px;">最近5轮</td><td style="padding:8px;">前15轮→摘要</td><td style="padding:8px;">不触发</td></tr>
+        <tr><td style="padding:8px;">长会话（60轮，1小时）</td><td style="padding:8px;">最近5轮</td><td style="padding:8px;">前55轮→摘要</td><td style="padding:8px;">摘要+热窗口总量超90K → 二次压缩</td></tr>
+      </table>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,132 @@
+<h2>记忆系统代码架构</h2>
+<p class="subtitle">SQLite + ChromaDB · BGE 嵌入 · 零外部服务</p>
+
+<div class="section">
+  <h3>📁 文件结构</h3>
+  <div class="mockup">
+    <div class="mockup-header">backend/memory/</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.8; text-align: left;">
+      memory/<br>
+      ├── <span style="color:#5B6AF0;">__init__.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ 暴露 MemoryManager, get_memory_manager()<br>
+      ├── <span style="color:#5B6AF0;">base.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ BaseMemory(ABC) + MemoryItem + MemoryConfig<br>
+      ├── <span style="color:#5B6AF0;">manager.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ MemoryManager 统一调度（入口）<br>
+      ├── <span style="color:#5B6AF0;">working.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ WorkingMemory — 会话层，纯内存 dict + TTL<br>
+      ├── <span style="color:#5B6AF0;">episodic.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ EpisodicMemory — 任务事件，SQLite + ChromaDB<br>
+      ├── <span style="color:#5B6AF0;">semantic.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ SemanticMemory — 偏好/知识，SQLite + ChromaDB<br>
+      ├── <span style="color:#5B6AF0;">embedding.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ LocalEmbedding（BGE 模型）<br>
+      ├── <span style="color:#888;">long_term.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ [deprecated] 内部迁移到 semantic<br>
+      └── <span style="color:#5B6AF0;">tools/</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;├── <span style="color:#5B6AF0;">__init__.py</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;├── <span style="color:#5B6AF0;">memory_tool.py</span> &nbsp;&nbsp;→ MemoryTool（第一期，LLM 调用入口）<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;└── <span style="color:#5B6AF0;">rag_tool.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ RAGTool（第二期，空壳占位）<br>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>🏗️ 类层次结构</h3>
+  <div class="mockup">
+    <div class="mockup-header">Class Hierarchy</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.8; text-align: left;">
+      <span style="color:#E07040;">BaseMemory</span> (ABC)<br>
+      ├── <span style="color:#5B6AF0;">WorkingMemory</span>  &nbsp;→ 存储: dict{user_id: deque}, TTL 自动过期<br>
+      ├── <span style="color:#5B6AF0;">EpisodicMemory</span> → 存储: SQLite + ChromaDB Collection<br>
+      └── <span style="color:#5B6AF0;">SemanticMemory</span> → 存储: SQLite + ChromaDB Collection<br>
+      <br>
+      <span style="color:#E07040;">MemoryItem</span> (dataclass)<br>
+      └── content, memory_type, importance, timestamp, metadata, ttl<br>
+      <br>
+      <span style="color:#E07040;">MemoryConfig</span> (dataclass)<br>
+      └── working_capacity, episodic_ttl, semantic_consolidation_threshold...<br>
+      <br>
+      <span style="color:#E07040;">MemoryManager</span><br>
+      ├── __init__(user_id, config, embedding, chroma_client)<br>
+      ├── add(content, type, importance) → 路由到对应记忆类型<br>
+      ├── search(query, memory_types, limit) → 混合检索<br>
+      ├── consolidate() → Working→Episodic→Semantic<br>
+      ├── forget(strategy) → 重要性/时间/容量遗忘<br>
+      └── get_context_for_prompt() → 拼接注入 System Prompt<br>
+      <br>
+      <span style="color:#E07040;">LocalEmbedding</span><br>
+      ├── __init__(model_name="BAAI/bge-small-zh-v1.5")<br>
+      └── embed(texts: list[str]) → np.ndarray<br>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>🔄 数据流</h3>
+  <div class="mockup">
+    <div class="mockup-header">请求生命周期</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 2; text-align: left;">
+      ┌─────────────────────────────────────────────────────────┐<br>
+      │ &nbsp;1. LLM 调用 memory_tool(action="save", content="用户喜欢Python")<br>
+      │ &nbsp;2. MemoryTool.execute() → MemoryManager.add()<br>
+      │ &nbsp;3. MemoryManager 调用 LLM 分类:<br>
+      │ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;"用户喜欢Python" → semantic(偏好), importance=0.7<br>
+      │ &nbsp;4. SemanticMemory.add():<br>
+      │ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;a. 写入 SQLite（source of truth）<br>
+      │ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;b. embed() → 向量写入 ChromaDB<br>
+      │ &nbsp;5. 返回确认给 LLM<br>
+      └─────────────────────────────────────────────────────────┘<br>
+      <br>
+      ┌─────────────────────────────────────────────────────────┐<br>
+      │ &nbsp;1. LLM 调用 memory_tool(action="search", query="编程偏好")<br>
+      │ &nbsp;2. MemoryTool.execute() → MemoryManager.search()<br>
+      │ &nbsp;3. embed("编程偏好") → 查询向量<br>
+      │ &nbsp;4. ChromaDB 语义检索 (episodic + semantic 两个 collection)<br>
+      │ &nbsp;5. 按评分公式排序: (相似度×0.7 + 重要性×0.2 + 时间×0.1)<br>
+      │ &nbsp;6. 返回 top-N 给 LLM 作为上下文<br>
+      └─────────────────────────────────────────────────────────┘<br>
+      <br>
+      ┌─────────────────────────────────────────────────────────┐<br>
+      │ &nbsp;引擎层注入（每次 Agent 任务启动时）:<br>
+      │ &nbsp;1. MemoryManager.get_context_for_prompt()<br>
+      │ &nbsp;2. Working: 当前会话上下文（最新 N 条）<br>
+      │ &nbsp;3. Semantic: 用户偏好和长期知识（重要性 > 阈值）<br>
+      │ &nbsp;4. 拼入 System Prompt → LLM 推理<br>
+      └─────────────────────────────────────────────────────────┘<br>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>💾 存储分布</h3>
+  <div class="mockup">
+    <div class="mockup-header">Storage Map</div>
+    <div class="mockup-body">
+      <table style="width:100%; border-collapse: collapse; font-size:13px; text-align:left;">
+        <tr style="border-bottom:2px solid #E5E7EB;"><th style="padding:8px;">数据</th><th style="padding:8px;">存储位置</th><th style="padding:8px;">用途</th></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">用户账户/密码</td><td style="padding:8px;">SQLite (chat.db)</td><td style="padding:8px;">认证，不动</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">对话消息</td><td style="padding:8px;">SQLite (chat.db)</td><td style="padding:8px;">聊天历史，不动</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">Agent 任务/步骤</td><td style="padding:8px;">SQLite (agent.db)</td><td style="padding:8px;">任务追踪，不动</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">Working 记忆</td><td style="padding:8px;">纯内存 dict</td><td style="padding:8px;">会话结束即丢</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">Episodic 记忆原文</td><td style="padding:8px;">SQLite (memory.db)</td><td style="padding:8px;">source of truth</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">Episodic 向量</td><td style="padding:8px;">ChromaDB</td><td style="padding:8px;">语义检索</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">Semantic 记忆原文</td><td style="padding:8px;">SQLite (memory.db)</td><td style="padding:8px;">source of truth</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;">Semantic 向量</td><td style="padding:8px;">ChromaDB</td><td style="padding:8px;">语义检索</td></tr>
+        <tr><td style="padding:8px;">BGE 嵌入模型</td><td style="padding:8px;">本地磁盘 (~100MB)</td><td style="padding:8px;">text→向量，离线</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>🔌 与现有系统的集成点</h3>
+  <div class="mockup">
+    <div class="mockup-header">改动范围（最少侵入）</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.8; text-align: left;">
+      <span style="color:#888;">不变:</span> backend/database.py, backend/server.py, backend/auth.py<br>
+      <br>
+      <span style="color:#E07040;">轻改:</span><br>
+      &nbsp;&nbsp;backend/agent/tools.py &nbsp;&nbsp;&nbsp;&nbsp;→ memory_search 工具改用 MemoryManager<br>
+      &nbsp;&nbsp;backend/agent/engine.py &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ get_context_for_prompt() 改用 MemoryManager<br>
+      &nbsp;&nbsp;backend/memory/__init__.py &nbsp;&nbsp;→ 新导出<br>
+      <br>
+      <span style="color:#5B6AF0;">新增:</span> memory/base.py, manager.py, working.py, episodic.py,<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;semantic.py, embedding.py, tools/memory_tool.py<br>
+      <br>
+      <span style="color:#E07040;">弃用:</span> memory/long_term.py → 内部委托给 SemanticMemory
+    </div>
+  </div>
+</div>

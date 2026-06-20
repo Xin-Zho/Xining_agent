@@ -1,0 +1,144 @@
+<h2>更新架构：记忆 + 上下文工程</h2>
+<p class="subtitle">新增 ContextBuilder 层 — 记忆与 LLM 之间的"最后一公里"</p>
+
+<div class="section">
+  <h3>📁 更新后的文件结构</h3>
+  <div class="mockup">
+    <div class="mockup-header">backend/memory/</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.8; text-align: left;">
+      memory/<br>
+      ├── <span style="color:#5B6AF0;">__init__.py</span><br>
+      ├── <span style="color:#5B6AF0;">base.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ BaseMemory + MemoryItem + MemoryConfig<br>
+      ├── <span style="color:#5B6AF0;">manager.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ MemoryManager（记忆核心）<br>
+      ├── <span style="color:#5B6AF0;">working.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ WorkingMemory<br>
+      ├── <span style="color:#5B6AF0;">episodic.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ EpisodicMemory<br>
+      ├── <span style="color:#5B6AF0;">semantic.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ SemanticMemory<br>
+      ├── <span style="color:#5B6AF0;">embedding.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ LocalEmbedding（BGE）<br>
+      ├── <span style="color:#E07040; font-weight:bold;">context.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ <span style="color:#E07040; font-weight:bold;">ContextBuilder（上下文工程，NEW）</span><br>
+      ├── <span style="color:#888;">long_term.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ [deprecated]<br>
+      └── <span style="color:#5B6AF0;">tools/</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;├── <span style="color:#5B6AF0;">memory_tool.py</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;└── <span style="color:#5B6AF0;">rag_tool.py</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ [占位]<br>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>🔀 完整数据流（加入上下文工程）</h3>
+  <div class="mockup">
+    <div class="mockup-header">Agent 任务启动时的完整链路</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 2; text-align: left;">
+      ┌───────┐ &nbsp;&nbsp;&nbsp;┌──────────────┐ &nbsp;&nbsp;&nbsp;┌───────────────┐ &nbsp;&nbsp;&nbsp;┌────────────┐ &nbsp;&nbsp;&nbsp;┌─────┐<br>
+      │ Agent │──→│ MemoryManager│──→│ ContextBuilder│──→│ 拼装最终 &nbsp;│──→│ LLM │<br>
+      │ Engine│ &nbsp;&nbsp;│ .search() &nbsp;│ &nbsp;&nbsp;│ .build() &nbsp;&nbsp;&nbsp;│ &nbsp;&nbsp;│ SystemPrompt│ &nbsp;&nbsp;│ &nbsp;&nbsp;&nbsp;&nbsp;│<br>
+      └───────┘ &nbsp;&nbsp;&nbsp;└──────┬───────┘ &nbsp;&nbsp;&nbsp;└───────┬───────┘ &nbsp;&nbsp;&nbsp;└────────────┘ &nbsp;&nbsp;&nbsp;└─────┘<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;┌──────┴──────┐ &nbsp;&nbsp;&nbsp;┌──────┴──────────┐<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│ Working &nbsp;&nbsp;&nbsp;│ &nbsp;&nbsp;&nbsp;│ ① Token 预算分配 &nbsp;│<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│ Episodic &nbsp;&nbsp;│ &nbsp;&nbsp;&nbsp;│ ② 记忆排序+截断 &nbsp;│<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;│ Semantic &nbsp;&nbsp;│ &nbsp;&nbsp;&nbsp;│ ③ 压缩旧对话历史 &nbsp;│<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─────────────┘ &nbsp;&nbsp;&nbsp;│ ④ 按优先级组装 &nbsp;&nbsp;│<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└─────────────────┘<br>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>🎯 ContextBuilder 职责</h3>
+  <div class="mockup">
+    <div class="mockup-header">context.py — 上下文工程层</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.8; text-align: left;">
+      <span style="color:#E07040;">class ContextBuilder:</span><br>
+      &nbsp;&nbsp;"""把记忆+历史+任务 组装进 LLM 上下文窗口，不超预算"""<br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">budget</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;= 90_000 &nbsp;&nbsp;&nbsp;# 总 token 预算<br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">system_reserve</span> = 3000 &nbsp;&nbsp;&nbsp;&nbsp;# System Prompt 固定配额<br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">memory_budget</span> &nbsp;= 2000 &nbsp;&nbsp;&nbsp;&nbsp;# 记忆上下文最大 token<br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">history_budget</span> = 60_000 &nbsp;&nbsp;# 对话历史最大 token<br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">tool_budget</span> &nbsp;&nbsp;&nbsp;= 25_000 &nbsp;&nbsp;# 工具结果最大 token<br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#888;"># 核心方法</span><br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">build(memories, history, task)</span> → list[dict]<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;"""主入口：组装最终 messages"""<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;1. 按 query 相关性排序记忆<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;2. 截断记忆到 memory_budget<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;3. 压缩旧对话到 history_budget<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;4. 按 [System + 记忆 + 历史 + 任务] 组装<br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">rank_memories(memories, query)</span> → list[MemoryItem]<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;"""按查询相关性+重要性+时间排序"""<br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">compress_history(messages, budget)</span> → list[dict]<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;"""把旧消息摘要压缩（复用现有逻辑）"""<br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">format_memory_context(memories)</span> → str<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;"""记忆→结构化文本块，注入 prompt"""<br>
+      <br>
+      &nbsp;&nbsp;<span style="color:#5B6AF0;">truncate_tool_result(text)</span> → str<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;"""工具结果智能截断（头尾保留）"""<br>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>📐 上下文窗口分配策略</h3>
+  <div class="mockup">
+    <div class="mockup-header">90K Token Budget 切分（DeepSeek 96K 上下文）</div>
+    <div class="mockup-body">
+      <div style="display: flex; width: 100%; height: 40px; border-radius: 6px; overflow: hidden; margin-bottom: 12px;">
+        <div style="width: 5%; background: #5B6AF0; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px;">3K</div>
+        <div style="width: 3%; background: #E07040; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px;">2K</div>
+        <div style="width: 67%; background: #45A884; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px;">60K</div>
+        <div style="width: 20%; background: #A0A0A0; display: flex; align-items: center; justify-content: center; color: white; font-size: 11px;">18K</div>
+        <div style="width: 5%; background: #D4D4D8; display: flex; align-items: center; justify-content: center; color: #71717A; font-size: 11px;">缓冲</div>
+      </div>
+      <table style="width:100%; border-collapse: collapse; font-size:12px; text-align:left;">
+        <tr style="border-bottom:2px solid #E5E7EB;"><th style="padding:6px;">区块</th><th style="padding:6px;">预算</th><th style="padding:6px;">来源</th><th style="padding:6px;">超限策略</th></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:6px;">System Prompt</td><td style="padding:6px;">~3K</td><td style="padding:6px;">固定模板</td><td style="padding:6px;">N/A</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:6px;">记忆上下文</td><td style="padding:6px;">~2K</td><td style="padding:6px;">MemoryManager</td><td style="padding:6px;">按相关性截断</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:6px;">对话历史</td><td style="padding:6px;">~60K</td><td style="padding:6px;">消息记录</td><td style="padding:6px;">LLM 摘要压缩</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:6px;">工具结果</td><td style="padding:6px;">~18K</td><td style="padding:6px;">实时返回</td><td style="padding:6px;">头60%+尾20%截断</td></tr>
+        <tr><td style="padding:6px;">安全缓冲</td><td style="padding:6px;">~5K</td><td style="padding:6px;">—</td><td style="padding:6px;">留给 LLM 输出</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>🏗️ 更新后的类关系</h3>
+  <div class="mockup">
+    <div class="mockup-header">三大核心类协作</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.8; text-align: left;">
+      <span style="color:#E07040;">MemoryManager</span> &nbsp;&nbsp;&nbsp;→ "存什么、查什么"<br>
+      &nbsp;&nbsp;.add() .search() .consolidate() .forget()<br>
+      <br>
+      <span style="color:#E07040;">ContextBuilder</span> &nbsp;&nbsp;→ "给 LLM 塞什么、塞多少"<br>
+      &nbsp;&nbsp;.build() .rank_memories() .compress_history() .format_memory_context()<br>
+      <br>
+      <span style="color:#E07040;">MemoryTool</span> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;→ "LLM 怎么调用"<br>
+      &nbsp;&nbsp;Tool 接口，委托给 MemoryManager<br>
+      <br>
+      ───────────────────────────────────────<br>
+      &nbsp;&nbsp;<span style="color:#888;">整合现有代码：</span><br>
+      &nbsp;&nbsp;ContextBuilder.compress_history() ← 合并 ContextManager.maybe_compress()<br>
+      &nbsp;&nbsp;ContextBuilder.truncate_tool_result() ← 合并 engine._smart_truncate()<br>
+      &nbsp;&nbsp;ContextBuilder.format_memory_context() ← 合并 ltm.get_context_for_prompt()<br>
+      &nbsp;&nbsp;<span style="color:#888;">→ backend/context_manager.py 废弃，逻辑迁移</span>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>📊 三层对比总结</h3>
+  <div class="mockup">
+    <div class="mockup-body">
+      <table style="width:100%; border-collapse: collapse; font-size:13px; text-align:left;">
+        <tr style="border-bottom:2px solid #E5E7EB;"><th style="padding:8px;">层</th><th style="padding:8px;">文件</th><th style="padding:8px;">一句话</th><th style="padding:8px;">对应用户代码</th></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;"><strong>记忆系统</strong></td><td style="padding:8px;">manager, working, episodic, semantic</td><td style="padding:8px;">存什么、查什么</td><td style="padding:8px;">MemoryManager(user_id)</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;"><strong>上下文工程</strong></td><td style="padding:8px;">context.py</td><td style="padding:8px;">塞什么、塞多少</td><td style="padding:8px;">ContextBuilder(budget=90K)</td></tr>
+        <tr style="border-bottom:1px solid #E5E7EB;"><td style="padding:8px;"><strong>工具层</strong></td><td style="padding:8px;">tools/memory_tool.py</td><td style="padding:8px;">LLM 怎么调用</td><td style="padding:8px;">memory_tool.execute(action, ...)</td></tr>
+        <tr><td style="padding:8px;"><strong>嵌入服务</strong></td><td style="padding:8px;">embedding.py</td><td style="padding:8px;">文本→向量</td><td style="padding:8px;">embedding.embed([text])</td></tr>
+      </table>
+    </div>
+  </div>
+</div>

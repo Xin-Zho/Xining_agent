@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -9,6 +9,7 @@ from jose import jwt, JWTError
 from .database import get_db
 
 SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev-secret-change-in-production")
+JWT_EXPIRATION_HOURS = int(os.environ.get("JWT_EXPIRATION_HOURS", "24"))
 security = HTTPBearer()
 
 
@@ -21,7 +22,12 @@ def verify_password(password: str, hash_: str) -> bool:
 
 
 def create_token(user_id: int) -> str:
-    payload = {"sub": str(user_id), "iat": datetime.now(timezone.utc)}
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": str(user_id),
+        "iat": now,
+        "exp": now + timedelta(hours=JWT_EXPIRATION_HOURS),
+    }
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 
 

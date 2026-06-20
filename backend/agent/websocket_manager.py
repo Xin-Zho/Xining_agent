@@ -10,14 +10,23 @@ class WebSocketManager:
     def __init__(self):
         self._connections: dict[int, WebSocket] = {}
         self.confirmations: dict[int, dict] = {}
+        self._agent_status_cache: dict[int, str] = {}  # Agent 状态缓存
+
+    def update_agent_status(self, task_id: int, status: str):
+        """engine 在状态变化时调用，供 ack 消息使用"""
+        self._agent_status_cache[task_id] = status
+
+    def get_agent_status(self, task_id: int) -> str:
+        return self._agent_status_cache.get(task_id, "executing_tool")
 
     async def connect(self, task_id: int, ws: WebSocket, user_id: int):
-        await ws.accept()
+        # accept() 由调用方在认证完成后执行，这里只登记连接
         self._connections[task_id] = ws
 
     def disconnect(self, task_id: int):
         self._connections.pop(task_id, None)
         self.confirmations.pop(task_id, None)
+        self._agent_status_cache.pop(task_id, None)
 
     async def broadcast(self, task_id: int, event_type: str, payload: dict):
         ws = self._connections.get(task_id)
@@ -46,7 +55,8 @@ class WebSocketManager:
 
 def _save_step(task_id: int, step_number: int, step_type: str, status: str = "running",
                tool_name: str = None, tool_args: dict = None, thought: str = None):
-    conn = get_db()
+    conn = get_db("agent")
+    # 注意：agent 相关表在 agent.db，不要混用 chat.db
     conn.execute(
         """INSERT INTO agent_steps (task_id, step_number, status, step_type, tool_name, tool_args, thought)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -65,8 +75,9 @@ def _update_step(
     tool_result: dict = None,
     duration_ms: int = None,
     tool_args: dict = None,
+    tool_name: str = None,
 ):
-    conn = get_db()
+    conn = get_db("agent")
     if tool_result is not None and tool_args is not None:
         conn.execute(
             """UPDATE agent_steps
@@ -95,7 +106,7 @@ def _update_step(
 
 
 def _update_task(task_id: int, **kwargs):
-    conn = get_db()
+    conn = get_db("agent")
     set_clause = ", ".join(f"{k} = ?" for k in kwargs)
     values = list(kwargs.values()) + [task_id]
     conn.execute(

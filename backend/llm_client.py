@@ -7,12 +7,14 @@ LLM 客户端 — 封装 DeepSeek API 调用
   - Prompt Caching 命中追踪
 """
 import os
+import httpx
 from openai import OpenAI
 
 LLM_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-LLM_MODEL_ID = "deepseek-chat"
+LLM_MODEL_ID = os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro")
 LLM_REASONER_ID = "deepseek-reasoner"
 LLM_BASE_URL = "https://api.deepseek.com"
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "300"))
 
 
 def estimate_tokens(text: str) -> int:
@@ -27,7 +29,11 @@ class LLMClient:
 
     def __init__(self, model_id=None):
         self.model_id = model_id or LLM_MODEL_ID
-        self.client = OpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+        self.client = OpenAI(
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
+            timeout=httpx.Timeout(LLM_TIMEOUT, connect=10.0),
+        )
         self.last_usage = {}
 
     def chat(self, messages):

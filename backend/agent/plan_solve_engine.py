@@ -9,30 +9,62 @@ import json
 import re
 import time
 
-from .tools import Tool
+from ..protocols.mcp.tool_adapter import ToolProtocol
 from .websocket_manager import WebSocketManager, _save_step, _update_step, _update_task
+from .review_prompt import REVIEW_SYSTEM_PROMPT
 from ..llm_client import estimate_tokens
+from ..evaluation.hooks import on_task_completed
 
 PLAN_SOLVE_SYSTEM_PROMPT = """You are a planning+execution agent.
 
-CRITICAL: For simple questions (greetings, basic knowledge, single calculations), answer DIRECTLY — no planning needed. Only use Plan→Execute→Synthesize for COMPLEX tasks that need multiple steps.
+## Tool Scope (READ BEFORE PLANNING)
 
-When task IS complex: Plan in ≤3 steps. Execute each step with batched tool calls. Synthesize with tables and sources. Think English, answer Chinese. Never guess."""
+- stock_query = China A-shares ONLY (沪深/科创板/创业板). For US/HK stocks, crypto, forex: use web_search + web_fetch.
+- Sports/events: use web_search + web_fetch for odds/news. Analyze and give probability + likely score range, citing data sources.
+
+## Clarification Rule (HIGHEST PRIORITY)
+
+If the user's task is AMBIGUOUS or underspecified, do NOT guess. Instead, ask 2-3 specific clarifying questions BEFORE any planning or execution.
+
+Examples of when to ask:
+- "帮我分析股票" → Which stocks? A-shares or US/HK? What timeframe?
+- "做个报告" → About what? What format? For whom?
+- "优化代码" → Which file? What aspect (speed/readability/memory)?
+
+Format your clarifying questions as a numbered list. After the user answers, proceed with the clarified task.
+
+## Workflow
+
+1. Is the task ambiguous? → Ask clarifying questions, STOP
+2. Is the task simple? → Answer directly
+3. Is the task complex? → Plan(≤3 steps) → Execute(batched tools) → Synthesize
+
+Think English, answer Chinese. Use tools, cite sources."""
 
 
 class PlanSolveEngine:
     """Plan-and-Solve：对复杂任务先列计划，再逐步执行"""
 
-    def __init__(self, deepseek, tools: list[Tool], ws_manager: WebSocketManager):
+    def __init__(self, deepseek, tools: list[ToolProtocol], ws_manager: WebSocketManager):
         self.deepseek = deepseek
         self.tools = tools
         self.tool_map = {t.name: t for t in tools}
         self.ws = ws_manager
         self._cancellations: set[int] = set()
+        self._tool_desc = "Tools: " + ", ".join(
+            t.to_openai_schema()["function"]["name"] + "("
+            + t.to_openai_schema()["function"]["description"][:50] + ")"
+            for t in tools
+        ) if tools else ""
 
     async def run(self, task_description: str, user_id: int, task_id: int, max_steps: int = 5):
         start_time = time.time()
         _update_task(task_id, status="planning")
+
+        # 注入记忆上下文
+        from ..memory.manager import MemoryManager
+        mem_mgr = MemoryManager(user_id)
+        self._mem_mgr = mem_mgr
 
         await self.ws.broadcast(task_id, "task_started", {
             "task_id": task_id,
@@ -137,11 +169,79 @@ class PlanSolveEngine:
                 "plan": plan,
             })
 
+            # ── 阶段 1.5：副 Agent 审校方案 ──────────────
+            step_number += 1
+            _save_step(task_id, step_number, "review", status="running",
+                       thought="副 Agent 审校方案中...")
+
+            await self.ws.broadcast(task_id, "step_start", {
+                "step_num": step_number,
+                "type": "review",
+                "message": "Reviewing plan for gaps...",
+            })
+
+            plan_for_review = json.dumps({
+                "plan": plan,
+            }, ensure_ascii=False)
+
+            review_messages = [
+                {"role": "system", "content": REVIEW_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Review this plan:\n\n{plan_for_review}"},
+            ]
+
+            review_resp = await self._call_llm(review_messages)
+            total_tokens += review_resp.usage.total_tokens if review_resp.usage else 0
+            review_text = review_resp.choices[0].message.content or "{}"
+
+            try:
+                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', review_text)
+                if json_match:
+                    review_text = json_match.group(1).strip()
+                review_data = json.loads(review_text)
+            except json.JSONDecodeError:
+                review_data = {
+                    "missing_steps": [],
+                    "flawed_logic": [],
+                    "boundary_gaps": [],
+                    "suggestions": [],
+                    "_parse_error": review_text[:200]
+                }
+
+            has_findings = any(
+                review_data.get(k)
+                for k in ["missing_steps", "flawed_logic", "boundary_gaps", "suggestions"]
+            )
+
+            _update_step(task_id, step_number, "completed",
+                         tool_result={"review": review_data}, duration_ms=0)
+
+            finding_count = sum(len(review_data.get(k, [])) for k in ['missing_steps', 'flawed_logic', 'boundary_gaps', 'suggestions'])
+
+            await self.ws.broadcast(task_id, "step_complete", {
+                "step_num": step_number,
+                "type": "review",
+                "content": "方案审校完成" if not has_findings else f"发现 {finding_count} 条改进建议",
+                "review": review_data,
+            })
+
             # ── 阶段 2：逐步执行（带消息连续性）───────
             results = []
             context = f"Task: {task_description}\n\nPlan:\n" + "\n".join(
                 f"{i}. {s}" for i, s in enumerate(plan, 1)
             )
+
+            # 将审校结果注入执行上下文
+            if has_findings:
+                review_summary = f"""\n\n[方案审校结果]
+副 Agent 对方案进行了审校，发现以下改进点：
+
+遗漏步骤：{json.dumps(review_data.get('missing_steps', []), ensure_ascii=False, indent=2)}
+逻辑缺陷：{json.dumps(review_data.get('flawed_logic', []), ensure_ascii=False, indent=2)}
+边界缺口：{json.dumps(review_data.get('boundary_gaps', []), ensure_ascii=False, indent=2)}
+优化建议：{json.dumps(review_data.get('suggestions', []), ensure_ascii=False, indent=2)}
+
+请逐条判断是否采纳，修正方案后继续执行。"""
+                context += review_summary
 
             for i, step_desc in enumerate(plan, 1):
                 if task_id in self._cancellations:
@@ -245,6 +345,17 @@ class PlanSolveEngine:
             total_tokens += summary_resp.usage.total_tokens if summary_resp.usage else 0
             final_answer = summary_resp.choices[0].message.content or "Task completed."
 
+            # 保存任务总结到情景记忆
+            try:
+                await self._mem_mgr.add(
+                    content=f"Plan-Solve任务: {task_description[:80]}\n结论: {final_answer[:300]}",
+                    memory_type="episodic",
+                    importance=0.5,
+                    metadata={"task_id": task_id, "mode": "plan_solve"},
+                )
+            except Exception:
+                pass
+
             duration_ms = int((time.time() - start_time) * 1000)
             _update_task(task_id, status="completed", final_answer=final_answer,
                          total_tokens=total_tokens, duration_ms=duration_ms,
@@ -256,6 +367,7 @@ class PlanSolveEngine:
                 "total_tokens": total_tokens,
                 "duration_ms": duration_ms,
             })
+            asyncio.create_task(on_task_completed(task_id))
 
         except Exception as e:
             duration_ms = int((time.time() - start_time) * 1000)
@@ -266,27 +378,31 @@ class PlanSolveEngine:
                 "error": str(e),
                 "last_step": step_number,
             })
+            asyncio.create_task(on_task_completed(task_id))
 
     async def _call_llm(self, messages: list[dict], tools: list[dict] = None):
         cached_messages = list(messages)
-        if tools:
-            tool_desc = "Tools: " + ", ".join(
-                t["function"]["name"] + "(" + t["function"]["description"][:50] + ")"
-                for t in tools
-            )
-            cached_messages.insert(1, {"role": "system", "content": tool_desc})
+        if tools and self._tool_desc:
+            if len(cached_messages) < 2 or cached_messages[1].get("content", "")[:6] != "Tools:":
+                cached_messages.insert(1, {"role": "system", "content": self._tool_desc})
         kwargs = {
-            "model": "deepseek-chat",
+            "model": os.environ.get("LLM_MODEL_ID", "deepseek-v4-pro"),
             "messages": cached_messages,
             "temperature": 0.7,
             "max_tokens": 4096,
         }
         if tools:
             kwargs["tools"] = tools
-        return await asyncio.to_thread(
-            self.deepseek.chat.completions.create,
-            **kwargs,
-        )
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.deepseek.chat.completions.create,
+                    **kwargs,
+                ),
+                timeout=300,
+            )
+        except asyncio.TimeoutError:
+            raise Exception("LLM 调用超时（300秒），请稍后重试或简化问题。")
 
     async def cancel(self, task_id: int):
         self._cancellations.add(task_id)

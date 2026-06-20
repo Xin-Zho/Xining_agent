@@ -107,8 +107,18 @@ class RuleExtractor:
 
         return {"recovery_count": len(recovery_patterns), "recommendations": recommendations}
 
-    def generate_prompt_suggestions(self) -> str:
-        """综合所有分析，生成 Prompt 优化建议"""
+    def generate_prompt_suggestions(self, eval_summary: dict = None) -> dict:
+        """
+        综合所有分析，生成 Prompt 优化建议。
+
+        Args:
+            eval_summary: 可选，来自 compute_weaknesses() + compute_dashboard_summary() 的评估数据。
+                         传入后输出会增加 structured 字段代替纯 markdown。
+
+        Returns:
+            dict: {"prompt": "markdown 字符串", "structured": [...]} 如果 eval_summary 传入
+                  str: 纯 markdown（兼容旧行为）如果 eval_summary 为空
+        """
         tool = self.extract_tool_usage_patterns()
         answer = self.extract_answer_patterns()
         recovery = self.extract_failure_recovery()
@@ -131,5 +141,29 @@ class RuleExtractor:
             "2. 用相同问题测试 Agent，对比回答质量",
             "3. 继续通过 Agent 管道对话积累更多日志",
         ]
+
+        # 如果有评估数据，附加结构化建议
+        if eval_summary:
+            structured = []
+            weaknesses = eval_summary.get("weaknesses", [])
+            dashboard = eval_summary.get("dashboard", {})
+
+            for w in weaknesses[:5]:
+                structured.append({
+                    "source": "evaluation",
+                    "category": w.get("category", ""),
+                    "severity": w.get("severity", ""),
+                    "finding": w.get("description", ""),
+                    "evidence": w.get("evidence", ""),
+                })
+
+            by_mode = dashboard.get("by_mode", {})
+            if by_mode:
+                lines.append("")
+                lines.append("## 评估数据增强")
+                for mode, stats in by_mode.items():
+                    lines.append(f"- {mode}: 成功率 {stats.get('success_rate', 0):.0%}, 任务数 {stats.get('count', 0)}")
+
+            return {"prompt": "\n".join(lines), "structured": structured}
 
         return "\n".join(lines)
