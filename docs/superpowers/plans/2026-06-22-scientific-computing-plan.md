@@ -4,11 +4,13 @@
 
 **Goal:** Transform the generic `agent_learning` platform into a chemistry & physics computational agent for upper-level undergraduates and first-year graduate students.
 
-**Architecture:** Keep the MCP protocol skeleton and dual-engine architecture intact. Replace the LLM client (Ollama), rewrite the calculator (sympy), add 3 domain MCP Servers (chemistry/physics/verify), build a scientific knowledge base with formula-aware chunking, and add a post-hoc verification chain in the ReAct engine.
+**Architecture:** Keep the MCP protocol skeleton and dual-engine architecture intact. Replace the LLM client (Ollama), rewrite the calculator (sympy), rewrite the system prompt for compute-first workflow, add 3 domain MCP Servers (chemistry/physics/verify), build a scientific knowledge base with formula-aware chunking, and add a post-hoc verification chain in the ReAct engine.
 
 **Tech Stack:** Python 3.10+, FastAPI, Ollama (OpenAI-compatible), sympy, scipy, pint, mendeleev, ChromaDB, BGE embeddings, KaTeX
 
 **Branch:** `calculate_agent`
+
+**Tasks:** 10 tasks across 3 phases (10 calendar days)
 
 ## Global Constraints
 
@@ -19,6 +21,8 @@
 - Verification must NOT block the main response — results appended asynchronously
 - Each task MUST pass its test gate before proceeding to the next task
 - Backward compatibility: legacy tools (web_search, stock_query, etc.) continue working
+- System prompt priority: compute → verify → search → output (never search-first for computable problems)
+- Scientific answers must use LaTeX for all math expressions
 
 ---
 
@@ -491,6 +495,161 @@ git commit -m "feat: sympy scientific calculator engine (Phase 1b)
 - pint unit conversion via unit(value, target) syntax
 - Security: blacklist __import__/eval/exec/open/getattr
 - 30s timeout wrapper for large symbolic expressions
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+---
+
+### Task 2.5: Scientific System Prompt Rewrite (Phase 1d)
+
+**Files:**
+- Modify: `backend/agent/engine.py` (replace `AGENT_SYSTEM_PROMPT`)
+
+**Interfaces:**
+- Consumes: Tool list from ToolRegistry (especially calculator, chemistry, physics after registration)
+- Produces: `AGENT_SYSTEM_PROMPT` — scientific computing-specific system prompt
+- Produces: `SCIENTIFIC_REFLECTION_PROMPT` — accuracy-focused reflection prompt
+
+**Why this matters:** The current prompt teaches LLM to use `stock_query` (A 股), `web_search` (百度/Bing), and file tools. A scientific computing model seeing this will get confused — it'll try to web-search "氢原子基态能量" instead of computing it with the quantum tool. The prompt must guide the model toward:
+1. **Compute first, search last** — try sympy calculator / chemistry / physics tools before web_search
+2. **Stop computing when done** — don't double-check with two methods unless the first result looks suspicious
+3. **Cite sources** — every factual claim must have a source
+4. **Format LaTeX** — math output in `$...$` or `$$...$$` for frontend rendering
+
+- [ ] **Step 1: Write the new system prompt**
+
+Replace `AGENT_SYSTEM_PROMPT` in `backend/agent/engine.py` (lines 37-58):
+
+```python
+AGENT_SYSTEM_PROMPT = """You are a scientific computing agent. You answer chemistry and physics questions using computational tools — NOT web search first. Your answers MUST be accurate, sourced, and formatted for students.
+
+## Tool selection priority
+1. COMPUTE first:
+   - calculator: symbolic math — diff, integrate, solve, limit, series, unit conversion
+   - balance_equation: balance chemical equations
+   - element_lookup: element properties, molar mass, electronegativity
+   - solution_chem: pH, buffers, titrations
+   - kinetics: reaction rates, half-life, Arrhenius
+   - electrochem: Nernst equation, cell potentials
+   - mechanics: kinematics, forces, energy
+   - electromagnetism: Coulomb, Biot-Savart
+   - quantum: infinite well, harmonic oscillator, H-atom (analytically solvable ONLY)
+   - optics: lens equation, interference
+   - thermodynamics: Carnot cycle, ideal gas
+   - error_propagation: uncertainty synthesis
+
+2. VERIFY second:
+   - verify_claim: check dimensional correctness, order-of-magnitude, back-substitution
+   - back_substitute: plug solutions back into original equations
+
+3. SEARCH third (only when computation tools cannot answer):
+   - web_search: current events, definitions, real-world data not in science_kb
+   - rag_search: search the scientific knowledge base for constants, formulas, theories
+
+4. OUTPUT last:
+   - create_document: generate .md/.csv reports
+   - create_excel: generate .xlsx data tables
+
+## Accuracy rules (CRITICAL)
+- Every calculation result MUST be verified when possible. Use verify_claim or back_substitute.
+- Every factual claim (constant value, formula, theory) MUST cite its source. Use rag_search to find the citation.
+- If a quantum system is NOT analytically solvable (e.g., helium atom), say "not analytically solvable — suggest numerical methods (HF/DFT)" INSTEAD of guessing.
+- When two methods disagree, report both results and flag the discrepancy. Do NOT silently pick one.
+- Use LaTeX for all math: $inline$ for short expressions, $$block$$ for equations.
+
+## When to stop
+Stop computing when:
+- You have a verified numeric answer with correct units
+- One credible source (peer-reviewed, NIST, textbook) directly answers the question
+- The same computation with the same inputs was already done this task
+
+Do NOT keep computing because:
+- "Let me double-check with another method" — only if the first result is suspicious (wrong units, wrong order-of-magnitude)
+- "Let me search for context" — the knowledge base has all standard constants
+
+## Output format
+- Math: ALWAYS use LaTeX ($...$ inline, $$...$$ block)
+- Tables: Markdown with aligned columns
+- Citations: mark each factual claim with its source like [NIST WebBook] or [IUPAC Gold Book]
+- Verification: if verify_claim was run, include the verification report
+- Language: answer in Chinese (中文), but symbols/formulas in LaTeX
+
+## Anti-patterns — NEVER
+- ✗ web_search("hydrogen ground state energy") — use quantum tool instead
+- ✗ web_search("pH of 0.1M HCl") — use solution_chem instead
+- ✗ Guessing a number without computation — always compute
+- ✗ "According to Wikipedia..." without a specific URL or revision date
+- ✗ Silently returning a wrong number — flag uncertainty explicitly
+- ✗ execute_command("python calculate.py") — use calculator tool instead"""
+```
+
+- [ ] **Step 2: Replace the reflection prompt**
+
+Replace `REFLECTION_PROMPT` (lines 60-66):
+
+```python
+REFLECTION_PROMPT = """Assess this scientific answer for accuracy. Check:
+1. Are all calculations verified (back-substitution or dimensional analysis)?
+2. Are all factual claims cited with a source?
+3. Is the answer free of silent errors (wrong numbers, wrong units, wrong order-of-magnitude)?
+4. Does the answer use LaTeX for all math expressions?
+
+If the answer passes all checks, reply ONLY 'pass'.
+If there are issues, state the most critical one in one sentence, then reply 'pass' so the task completes.
+Do NOT block the answer for minor formatting issues.
+
+用户问题：{user_question}
+回答：{answer}
+
+评估："""
+```
+
+- [ ] **Step 3: Add needs_tools keywords for scientific queries**
+
+In the `run()` method, update the `needs_tools` keyword list (around line 130) to include scientific triggers:
+
+```python
+needs_tools = any(w in raw_question for w in [
+    # existing keywords
+    "搜", "查", "找", "分析", "生成", "创建", "下载", "股票",
+    "天气", "新闻", "最新", "实时", "今天", "现在", "当前",
+    "帮我写", "帮我做", "帮我查", "计算", "预测", "比较",
+    "世界杯", "球赛", "比分", "谁会赢", "比赛", "走势",
+    "推荐", "评测", "攻略", "教程", "价格", "多少钱",
+    "A股", "涨幅", "跌", "行情", "Excel", "excel", "表格",
+    "报告", "文档", "数据", "排名", "列表", "整理",
+    # scientific computing triggers (Phase 1d)
+    "求", "解", "算", "推导", "证明", "化简", "积分", "微分",
+    "方程", "公式", "配平", "摩尔", "pH", "浓度", "反应",
+    "热力学", "量子", "力学", "电磁", "光学", "误差",
+    "eV", "kJ", "mol", "焓", "熵", "Gibbs", "Nernst",
+    "波函数", "本征值", "谐振子", "势阱", "氢原子",
+    "能级", "光谱", "衍射", "干涉",
+])
+```
+
+- [ ] **Step 4: Verify**
+
+```bash
+cd D:\agent_learning
+python -c "from backend.agent.engine import AGENT_SYSTEM_PROMPT; print(len(AGENT_SYSTEM_PROMPT)); assert 'calculator' in AGENT_SYSTEM_PROMPT; assert 'stock_query' not in AGENT_SYSTEM_PROMPT; print('OK')"
+```
+Expected: `OK` — new prompt has calculator, doesn't mention stock_query.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add backend/agent/engine.py
+git commit -m "feat: scientific system prompt for compute-first workflow (Phase 1d)
+
+- Replace generic agent prompt with scientific computing prompt
+- Priority: compute → verify → search → output
+- Accuracy rules: verify results, cite sources, flag uncertainty
+- Anti-patterns: no web_search for computable problems
+- LaTeX output requirement for all math
+- Updated reflection prompt with 4-dimension accuracy check
+- Added scientific keywords to needs_tools trigger list
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
@@ -2533,6 +2692,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 - [ ] Task 1: Ollama Client → `tests/test_llm_client.py` PASS
 - [ ] Task 2: sympy Calculator → `tests/test_calculator.py` PASS
+- [ ] Task 2.5: Scientific System Prompt → prompt validates, no stock_query references
 - [ ] Task 3: LaTeX Frontend → manual browser verification
 - [ ] Task 4: Chemistry Server → `tests/test_chemistry_server.py` PASS
 - [ ] Task 5: Physics Server → `tests/test_physics_server.py` PASS

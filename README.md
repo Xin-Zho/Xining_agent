@@ -271,6 +271,7 @@ ChromaDB (data/chroma/)
 |------|------|--------|-----------|
 | 1. Ollama 客户端 | `llm_client.py` 重写，连接本地 Ollama | 1-2d | 流式/非流式正常，超时友好 |
 | 2. sympy 计算器 | `tools.py` calculator → sympy 符号引擎 | 2-3d | diff/integrate/solve 正确，代码注入拦截 |
+| 2.5 科学 system prompt | `engine.py` prompt 重写：compute → verify → search → output | 0.5d | prompt 不含 stock_query，含 calculator/quantum 引导 |
 | 3. LaTeX 前端 | KaTeX CDN，chat.js 自动渲染 `$...$` / `$$...$$` | 0.5d | Chrome/Firefox/Edge 渲染正常 |
 
 ```
@@ -310,7 +311,7 @@ Phase 3c ──╯（依赖 3a+3b）
 ### 依赖链
 
 ```
-1a(Ollama) + 1b(sympy) + 1c(LaTeX)   ← 并行
+1a(Ollama) + 1b(sympy) + 1d(prompt) + 1c(LaTeX)  ← 并行
         │
    ┌────┴────┐
   2a(chem)  2b(phys)   2c(KB)        ← 并行
@@ -330,7 +331,7 @@ Phase 3c ──╯（依赖 3a+3b）
 
 | | 工作量 | 日历（并行后） |
 |--|--------|---------------|
-| Phase 1 | 3.5-5.5d | 3d |
+| Phase 1 | 4-6d | 3d |
 | Phase 2 | 7-11d | 4d |
 | Phase 3 | 5-6d | 3d |
 | **合计** | **13-20d** | **10d** |
