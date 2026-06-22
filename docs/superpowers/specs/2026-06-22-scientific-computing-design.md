@@ -234,7 +234,7 @@ Stdio JSON-RPC MCP Server. Dependencies: `sympy`, `scipy`, `pint`.
 | `mechanics` | Kinematics, Newton's laws, energy, momentum |
 | `electromagnetism` | Coulomb, Biot-Savart, Maxwell equations |
 | `thermodynamics` | Carnot cycle, entropy, free energy |
-| `quantum` | 1D infinite well, harmonic oscillator, H-atom eigenvalues |
+| `quantum` | 1D infinite well, harmonic oscillator, H-atom eigenvalues. **Only analytically solvable models.** Multi-electron systems (He, Li, ...) must return "not analytically solvable — suggest numerical methods (HF/DFT)" instead of a wrong number |
 | `optics` | Lens equation, interference, diffraction |
 | `error_propagation` | Error synthesis for ±/*/log/exp operations |
 
@@ -245,6 +245,7 @@ Stdio JSON-RPC MCP Server. Dependencies: `sympy`, `scipy`, `pint`.
 - Infinite well: L=1nm ground state → reasonable energy
 - Unit conversion: `10 m/s → 36 km/h` via pint
 - Dimensional analysis: force ≠ mass → pint detects error
+- Quantum boundary: `"helium atom ground state energy"` → refuses with "not analytically solvable" message, not a guessed number
 
 ---
 
@@ -270,22 +271,46 @@ Detect $...$, $$...$$, \[...\] boundaries
 → Each chunk metadata: {source_url, doi, subject_tags, formulas[], last_updated}
 ```
 
+**Embedding model selection:**
+```
+Default: BGE-small-zh-v1.5 (512-dim, existing in project)
+Risk: BGE-small-zh trained primarily on Chinese text.
+      IUPAC/NIST/Wikipedia-English may have lower recall.
+Fallback: bge-m3 (multilingual, 1024-dim) or intfloat/e5-small-v2
+
+Decision gate in test: run English-vs-Chinese query comparison.
+If BGE-small-zh English recall < 70% of Chinese recall → switch to bge-m3.
+```
+
 **Ingestion pipeline:**
 ```
 Source URL / file
   → fetch/parse
   → formula-aware split
-  → embed (BGE-small-zh-v1.5)
+  → embed (BGE-small-zh-v1.5 or bge-m3, TBD by test)
   → upsert to science_kb collection
   → log {chunk_count, source, timestamp}
+```
+
+**rag_search collection routing (bridge to science_kb):**
+```
+rag_search tool adds optional `collection` parameter:
+  - "all" (default) → search rag_documents + science_kb, merge by relevance
+  - "science_kb" → search science_kb only
+  - "rag_documents" → search rag_documents only
+
+This ensures science_kb is usable immediately after Phase 2c ingest,
+not delayed until Phase 3b.
 ```
 
 **Test gate:**
 - 100 items ingested → `science_kb.count() == 100`
 - `"hydrogen ground state energy"` → top-3 hits relevant
+- `"hydrogen Lyman series wavelength"` (English query, English docs) → relevant chunks returned. If BGE-small-zh recall < 70% of equivalent Chinese query, switch to bge-m3
 - No orphaned `$` or `$$` in any chunk
 - Retrieved chunks have non-empty `source` field
 - Duplicate URL → skipped, not duplicated
+- `rag_search("electron affinity", collection="science_kb")` → hits science_kb only, not rag_documents
 
 ---
 
@@ -328,7 +353,8 @@ Post-hoc verification. Does NOT block the main response — results appended as 
 - Wrong dimension: `F = 10 kg` → flagged suspicious
 - Back-sub: `solve(x²-5x+6=0)` roots → substitution yields 0
 - Non-blocking: verification failure shows warning, answer already delivered
-- Verification adds ≤ 5s latency
+- Per-claim latency ≤ 5s (single claim: classify → verify one dimension)
+- Total report latency ≤ 15s (all claims verified in parallel via asyncio.gather)
 
 ---
 
