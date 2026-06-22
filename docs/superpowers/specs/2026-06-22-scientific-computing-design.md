@@ -304,7 +304,7 @@ not delayed until Phase 3b.
 ```
 
 **Test gate:**
-- 100 items ingested → `science_kb.count() == 100`
+- 500 items ingested → `science_kb.count() == 500` (minimum viable knowledge base; covers all 5 sources with representative coverage)
 - `"hydrogen ground state energy"` → top-3 hits relevant
 - `"hydrogen Lyman series wavelength"` (English query, English docs) → relevant chunks returned. If BGE-small-zh recall < 70% of equivalent Chinese query, switch to bge-m3
 - No orphaned `$` or `$$` in any chunk
@@ -394,7 +394,7 @@ ReAct round 3 → LLM produces answer
 - `"speed of light 2.99×10⁸ m/s, photon energy E=hf"` → extracts 2 claims
 - Erroneous calculation → `[!]` flag in report
 - Report renders as collapsible section in frontend
-- Verification adds ≤ 5s total latency
+- Total verification latency ≤ 15s (inherits Phase 3b budget; claims verified in parallel)
 
 ---
 
