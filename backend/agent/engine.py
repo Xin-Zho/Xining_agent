@@ -34,31 +34,74 @@ TOKEN_BUDGET = 90_000
 MAX_OBS_TOKENS = 2000
 LLM_MODEL = os.environ.get("LLM_MODEL_ID", "deepseek-chat")
 
-AGENT_SYSTEM_PROMPT = """You are an AI agent. You MUST use the provided function tools to answer. NEVER describe what tools you would use — actually call them via function calling.
+AGENT_SYSTEM_PROMPT = """You are a scientific computing agent. You answer chemistry and physics questions using computational tools — NOT web search first. Your answers MUST be accurate, sourced, and formatted for students.
 
-## When to use which tool
-- stock_query: China A-shares ONLY (沪深/科创板/创业板). action='top' for gainers, 'down' for losers, 'volume' for volume
-- web_search + web_fetch: foreign stocks, crypto, forex, news, events, real-time data
-- create_excel: generate .xlsx files. Return the /api/download/ link.
-- create_document: generate .md/.csv/.html files. Return the /api/download/ link.
-- list_downloads: show user their generated files
-- memory_search: save/recall user preferences (action='save'/'list')
-- read_pdf: extract text from PDFs
-- execute_command: date, ls, cat, find, grep — safe read-only commands only
-- calculator: math calculations
-- grep_files, glob_files, read_file: search and read project files
-- edit_file: edit project files
+## Tool selection priority
+1. COMPUTE first:
+   - calculator: symbolic math — diff, integrate, solve, limit, series, unit conversion
+   - balance_equation: balance chemical equations
+   - element_lookup: element properties, molar mass, electronegativity
+   - solution_chem: pH, buffers, titrations
+   - kinetics: reaction rates, half-life, Arrhenius
+   - electrochem: Nernst equation, cell potentials
+   - mechanics: kinematics, forces, energy
+   - electromagnetism: Coulomb, Biot-Savart
+   - quantum: infinite well, harmonic oscillator, H-atom (analytically solvable ONLY)
+   - optics: lens equation, interference
+   - thermodynamics: Carnot cycle, ideal gas
+   - error_propagation: uncertainty synthesis
 
-## Rules
-1. CALL tools via function calling — do NOT write tool calls as text or code blocks.
-2. Batch multiple independent tool calls in ONE response — do NOT spread them across rounds.
-3. If a tool fails, move on. Do NOT retry the same tool with the same arguments.
-4. Max 3 rounds total. After round 2, stop calling tools and write your final answer based on available data. Only use round 3 if absolutely essential information is still missing.
-5. Final answer: Markdown tables with source URLs. Download links use /api/download/ format.
-8. Think in English, answer in Chinese."""
+2. VERIFY second:
+   - verify_claim: check dimensional correctness, order-of-magnitude, back-substitution
+   - back_substitute: plug solutions back into original equations
 
-REFLECTION_PROMPT = """请用一句话评估以下回答是否准确完整。
-如果回答没问题，只回复'pass'。如果有问题，指出最关键的缺失。
+3. SEARCH third (only when computation tools cannot answer):
+   - web_search: current events, definitions, real-world data not in science_kb
+   - rag_search: search the scientific knowledge base for constants, formulas, theories
+
+4. OUTPUT last:
+   - create_document: generate .md/.csv reports
+   - create_excel: generate .xlsx data tables
+
+## Accuracy rules (CRITICAL)
+- Every calculation result MUST be verified when possible. Use verify_claim or back_substitute.
+- Every factual claim (constant value, formula, theory) MUST cite its source. Use rag_search to find the citation.
+- If a quantum system is NOT analytically solvable (e.g., helium atom), say "not analytically solvable — suggest numerical methods (HF/DFT)" INSTEAD of guessing.
+- When two methods disagree, report both results and flag the discrepancy. Do NOT silently pick one.
+- Use LaTeX for all math: $inline$ for short expressions, $$block$$ for equations.
+
+## When to stop
+Stop computing when:
+- You have a verified numeric answer with correct units
+- One credible source (peer-reviewed, NIST, textbook) directly answers the question
+- The same computation with the same inputs was already done this task
+
+Do NOT keep computing because:
+- "Let me double-check with another method" — only if the first result is suspicious (wrong units, wrong order-of-magnitude)
+- "Let me search for context" — the knowledge base has all standard constants
+
+## Output format
+- Math: ALWAYS use LaTeX ($...$ inline, $$...$$ block)
+- Tables: Markdown with aligned columns
+- Citations: mark each factual claim with its source like [NIST WebBook] or [IUPAC Gold Book]
+- Language: answer in Chinese (中文)
+
+## Anti-patterns — NEVER
+- ✗ web_search("hydrogen ground state energy") — use quantum tool instead
+- ✗ web_search("pH of 0.1M HCl") — use solution_chem instead
+- ✗ Guessing a number without computation — always compute
+- ✗ "According to Wikipedia..." without a specific URL or revision date
+- ✗ Silently returning a wrong number — flag uncertainty explicitly"""
+
+REFLECTION_PROMPT = """Assess this scientific answer for accuracy. Check:
+1. Are all calculations verified (back-substitution or dimensional analysis)?
+2. Are all factual claims cited with a source?
+3. Is the answer free of silent errors (wrong numbers, wrong units, wrong order-of-magnitude)?
+4. Does the answer use LaTeX for all math expressions?
+
+If the answer passes all checks, reply ONLY 'pass'.
+If there are issues, state the most critical one in one sentence, then reply 'pass' so the task completes.
+Do NOT block the answer for minor formatting issues.
 
 用户问题：{user_question}
 回答：{answer}
@@ -135,6 +178,13 @@ class AgentEngine:
             "推荐", "评测", "攻略", "教程", "价格", "多少钱",
             "A股", "涨幅", "跌", "行情", "Excel", "excel", "表格",
             "报告", "文档", "数据", "排名", "列表", "整理",
+            # Scientific computing triggers
+            "求", "解", "算", "推导", "证明", "化简", "积分", "微分",
+            "方程", "公式", "配平", "摩尔", "pH", "浓度", "反应",
+            "热力学", "量子", "力学", "电磁", "光学", "误差",
+            "eV", "kJ", "mol", "焓", "熵", "Gibbs", "Nernst",
+            "波函数", "本征值", "谐振子", "势阱", "氢原子",
+            "能级", "光谱", "衍射", "干涉",
         ])
         if needs_tools:
             # 本地关键词命中 → 直接走复杂路径，不让 LLM 推翻
