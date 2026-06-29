@@ -81,6 +81,10 @@ function addMsgToDOM(role, content) {
   row.appendChild(div);
   msgs.appendChild(row);
   U.scrollBottom();
+  // KaTeX auto-render for LaTeX math
+  if (typeof renderMathInElement !== 'undefined') {
+    try { renderMathInElement(div, { delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false},{left:'\\(',right:'\\)',display:false},{left:'\\[',right:'\\]',display:true}], throwOnError: false }); } catch(e) {}
+  }
   return div;
 }
 
@@ -247,6 +251,9 @@ function handleSSEEvent(ev, conv, bubble, fullReply) {
 
     case 'answer':
       bubble.innerHTML = U.renderMarkdown(ev.answer || ev.content || '');
+      if (typeof renderMathInElement !== 'undefined') {
+        try { renderMathInElement(bubble, { delimiters: [{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false},{left:'\\(',right:'\\)',display:false},{left:'\\[',right:'\\]',display:true}], throwOnError: false }); } catch(e) {}
+      }
       break;
 
     case 'step':
