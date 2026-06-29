@@ -31,7 +31,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Awaitable
 from urllib.parse import urlparse
-
+import re as _re
+import sympy as _sympy
+from sympy.parsing.sympy_parser import (
+    parse_expr, standard_transformations,
+    implicit_multiplication_application, convert_xor,
+)
 
 # 项目根目录 (agent_learning/)
 PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
@@ -146,24 +151,105 @@ def _record_download(user_id: int, filename: str, filepath: str, size: int):
 
 # ── 本地进程内工具 handler ────────────────────────────────────────────
 
+# ── sympy 科学计算器 ─────────────────────────────────────────────────
+
+# 预定义符号
+_SYM_NAMES = {
+    'x', 'y', 'z', 't', 'a', 'b', 'c', 'n', 'm', 'k', 'h', 'r', 'T', 'P', 'V',
+    'theta', 'alpha', 'beta', 'gamma', 'omega', 'lambda_', 'sigma',
+}
+_SYM_TABLE = {name: _sympy.symbols(name) for name in _SYM_NAMES}
+
+_TRANSFORMATIONS = standard_transformations + (implicit_multiplication_application, convert_xor)
+
+_SYMPY_FUNCTIONS = {
+    'diff': _sympy.diff, 'integrate': _sympy.integrate, 'solve': _sympy.solve,
+    'dsolve': _sympy.dsolve, 'limit': _sympy.limit, 'series': _sympy.series,
+    'Matrix': _sympy.Matrix, 'pi': _sympy.pi, 'E': _sympy.E,
+    'sin': _sympy.sin, 'cos': _sympy.cos, 'tan': _sympy.tan,
+    'log': _sympy.log, 'exp': _sympy.exp, 'sqrt': _sympy.sqrt, 'Abs': _sympy.Abs,
+    'evalf': lambda expr, n=15: _sympy.N(expr, n),
+    'simplify': _sympy.simplify,
+    'expand': _sympy.expand, 'factor': _sympy.factor,
+    'apart': _sympy.apart, 'together': _sympy.together,
+}
+
+_BLOCKED_NAMES = frozenset({
+    '__import__', 'eval', 'exec', 'open', 'compile', 'getattr',
+    'setattr', 'delattr', 'globals', 'locals', '__builtins__',
+    '__builtin__', '__class__', '__bases__', '__subclasses__',
+    '__mro__', '__dict__', '__globals__', '__code__', '__closure__',
+    'os', 'sys', 'subprocess', 'importlib', 'builtins',
+    'pty', 'posix', 'shutil', 'socket', 'ctypes',
+})
+
+
+def _safe_parse(expr_str: str) -> _sympy.Expr:
+    """安全解析 sympy 表达式。返回 sympy.Expr 或抛出 ValueError。"""
+    tokens = set(_re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', expr_str))
+    blocked = tokens & _BLOCKED_NAMES
+    if blocked:
+        raise ValueError(f"Blocked identifiers: {', '.join(sorted(blocked))}")
+    local_dict = dict(_SYMPY_FUNCTIONS)
+    local_dict.update(_SYM_TABLE)
+    return parse_expr(expr_str, local_dict=local_dict, transformations=_TRANSFORMATIONS)
+
+
+def _safe_parse_and_eval(expr_str: str) -> str:
+    """在线程中执行 sympy 计算（可被超时取消）"""
+    parsed = _safe_parse(expr_str)
+    if isinstance(parsed, _sympy.Expr):
+        simplified = _sympy.simplify(parsed)
+        return str(simplified)
+    return str(parsed)
+
+
 async def _calculator(expression: str) -> dict:
-    """安全数学计算"""
-    allowed = set("0123456789+-*/().%^ eEpPiI")
-    if not all(c in allowed for c in expression):
-        return {"error": "表达式包含不允许的字符", "expression": expression}
+    """科学计算器 — sympy 符号引擎 + pint 单位处理
+
+    支持的表达式格式：
+      diff(x**3 + sin(x), x)          — 符号微分
+      integrate(x**2, (x, 0, 1))     — 定积分
+      solve(x**2 - 4, x)             — 方程求解
+      evalf(pi, 50)                  — 高精度数值
+      unit(5*meter/second, km/hour)  — 单位转换
+    """
+    import asyncio as _asyncio
+
+    expr = expression.strip()
+
+    # ── 单位转换路径 ──
+    if expr.startswith("unit("):
+        try:
+            import pint as _pint
+            ureg = _pint.UnitRegistry()
+            inner = expr[5:].rstrip(")")
+            parts = [p.strip() for p in inner.split(",", 1)]
+            if len(parts) != 2:
+                return {"status": "error", "expression": expression,
+                        "error": "unit() requires 2 arguments: unit(value, target_unit)"}
+            value_str, target_str = parts
+            quantity = eval(value_str, {"__builtins__": {}}, {"ureg": ureg, **_SYM_TABLE})
+            target = eval(target_str, {"__builtins__": {}}, {"ureg": ureg})
+            result = quantity.to(target)
+            return {"status": "ok", "expression": expression, "result": str(result)}
+        except Exception as e:
+            return {"status": "error", "expression": expression, "error": str(e)}
+
+    # ── sympy 符号计算路径 ──
     try:
-        safe_dict = {
-            "abs": abs, "round": round, "min": min, "max": max,
-            "sum": sum, "pow": pow,
-            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos,
-            "tan": math.tan, "log": math.log, "log10": math.log10,
-            "pi": math.pi, "e": math.e,
-            "ceil": math.ceil, "floor": math.floor,
-        }
-        result = eval(expression, {"__builtins__": {}}, safe_dict)
-        return {"expression": expression, "result": result}
+        result = await _asyncio.wait_for(
+            _asyncio.to_thread(_safe_parse_and_eval, expr),
+            timeout=30.0,
+        )
+        return {"status": "ok", "expression": expression, "result": result}
+    except _asyncio.TimeoutError:
+        return {"status": "error", "expression": expression,
+                "error": "计算超时（30s），请简化表达式"}
+    except ValueError as e:
+        return {"status": "error", "expression": expression, "error": str(e)}
     except Exception as e:
-        return {"error": str(e), "expression": expression}
+        return {"status": "error", "expression": expression, "error": str(e)}
 
 
 async def _timer_set(seconds: int, label: str = "计时器") -> dict:
@@ -383,11 +469,11 @@ LOCAL_TOOLS: list[Tool] = [
     ),
     Tool(
         name="calculator",
-        description="执行数学计算。支持基本运算、三角函数、对数等。",
+        description="科学计算器。符号计算: diff(表达式,变量)/integrate(表达式,(变量,下限,上限))/solve(方程,变量)/dsolve/l/series/evalf(expr,n)。单位转换: unit(值*单位, 目标单位)。示例: diff(x**3+sin(x),x) / integrate(x**2,(x,0,1)) / solve(x**2-4,x) / evalf(pi,50) / unit(5*m/s,km/h)",
         parameters={
             "type": "object",
             "properties": {
-                "expression": {"type": "string", "description": "数学表达式，例如 'sqrt(16) + 3*5'"},
+                "expression": {"type": "string", "description": "sympy表达式，如 'diff(x**3+sin(x),x)' 或 'unit(5*m/s,km/h)'"},
             },
             "required": ["expression"],
         },
