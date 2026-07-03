@@ -1,31 +1,12 @@
 # Calculate Agent
 
-> **Branch:** `calculate_agent` | **Status:** 开发中
+> **Branch:** `calculate_agent` | **Status:** Phase 2 进行中（5/10 Tasks 完成）
 
 面向本科生及研究生的 **化学物理计算 Agent**。基于通用 Agent 底座改造——本地 Ollama 大模型 + sympy 符号计算 + 领域 MCP Server + 科学知识库 + 验证链。
 
 ---
 
-## 现有架构（改造起点）
-
-当前 `calculate_agent` 分支继承自主分支的通用 Agent 底座（8.1/10）：
-
-```
-ReAct 引擎 + Plan-Solve 双引擎
-18 个通用工具（搜索、文件、文档、股票）
-MCP 协议隔离（5 个 Server，stdio JSON-RPC）
-ChromaDB RAG（BGE-small-zh-v1.5，512-dim）
-三层记忆系统（工作/情景/语义）
-评估系统（LLM Judge 4 维度评分）
-FastAPI + WebSocket 实时推送
-DeepSeek API（OpenAI SDK）
-```
-
-**通用 Agent 的局限**：计算器只是 `eval()` 的安全封装，RAG 面向中文文档，system prompt 面向搜索/文件操作，没有领域知识。
-
----
-
-## 预期架构（改造目标）
+## 当前架构（已完成改造）
 
 ```
                         ┌── Browser (H5 + KaTeX LaTeX) ──┐
@@ -35,19 +16,18 @@ DeepSeek API（OpenAI SDK）
                         │   FastAPI (server.py)            │
                         │   ┌─────────────────────────┐    │
                         │   │  ReAct Engine            │    │
-                        │   │  + verify chain 验证链    │    │
+                        │   │  system prompt: 科学计算  │    │
+                        │   │  (verify chain 待 Phase 3)│    │
                         │   └──────────┬──────────────┘    │
                         │              │                   │
                         │   ┌──────────▼──────────────┐    │
-                        │   │  ToolRegistry (25+ tools)│    │
+                        │   │  ToolRegistry             │    │
                         │   │                          │    │
                         │   │  本地: calculator(sympy)  │    │
-                        │   │  本地: timer_set          │    │
                         │   │  本地: web_search/fetch   │    │
                         │   │                          │    │
-                        │   │  MCP: chemistry_server    │    │
-                        │   │  MCP: physics_server      │    │
-                        │   │  MCP: verify_server       │    │
+                        │   │  MCP: chemistry_server ✅  │    │
+                        │   │  MCP: physics_server ✅    │    │
                         │   │  MCP: filesystem ×2       │    │
                         │   │  MCP: shell/document/mem  │    │
                         │   └──────────────────────────┘    │
@@ -55,29 +35,42 @@ DeepSeek API（OpenAI SDK）
                                        │
                 ┌──────────────────────┼──────────────────────┐
                 │                      │                      │
-        ┌───────▼──────┐    ┌─────────▼─────────┐    ┌───────▼──────┐
-        │  Ollama       │    │  ChromaDB          │    │  MCP Servers │
-        │  qwen3:14b    │    │  science_kb (新)    │    │  (stdio)     │
-        │  localhost    │    │  rag_documents      │    │  chemistry   │
-        │  :11434       │    │  semantic_all       │    │  physics     │
-        └──────────────┘    │  episodic_all       │    │  verify      │
-                            └─────────────────────┘    └──────────────┘
+        ┌───────▼──────┐    ┌─────────▼─────────┐                
+        │  Ollama       │    │  ChromaDB          │                
+        │  qwen3:14b ✅ │    │  rag_documents      │                
+        │  localhost    │    │  semantic_all       │                
+        │  :11434       │    │  science_kb (待)    │                
+        └──────────────┘    └─────────────────────┘                
 ```
 
 ### 改动清单
 
-| 文件 | 改动 | 说明 |
-|------|------|------|
-| `backend/llm_client.py` | **重写** | DeepSeek API → Ollama 本地客户端 |
-| `backend/agent/tools.py` | **重写** | calculator: eval() → sympy 符号引擎 |
-| `backend/agent/engine.py` | 改动 | 加 verify chain 验证钩子 |
-| `backend/memory/embedding.py` | 改动 | 公式感知分块 + 模型可选 |
-| `backend/memory/science_kb_ingest.py` | **新建** | 科学知识库摄入管道 |
-| `backend/protocols/mcp/servers/chemistry_server.py` | **新建** | 7 个化学工具 |
-| `backend/protocols/mcp/servers/physics_server.py` | **新建** | 6 个物理工具 |
-| `backend/protocols/mcp/servers/verify_server.py` | **新建** | 5 维验证 |
-| `web/static/` | 改动 | KaTeX LaTeX 渲染 |
-| `requirements.txt` | 改动 | +sympy, scipy, pint, mendeleev |
+| 文件 | 改动 | 状态 | 说明 |
+|------|------|------|------|
+| `backend/llm_client.py` | **重写** | ✅ | DeepSeek API → Ollama 本地客户端，qwen3:14b 端到端验证通过 |
+| `backend/agent/tools.py` | **重写** | ✅ | calculator: eval() → sympy 符号引擎（diff/integrate/solve/evalf） |
+| `backend/agent/engine.py` | 改动 | ✅ | 科学 system prompt（compute→verify→search→output）+ 科学触发词 |
+| `web/static/` | 改动 | ✅ | KaTeX 0.16.11 LaTeX 渲染（$inline$ / $$block$$） |
+| `backend/protocols/mcp/servers/chemistry_server.py` | **新建** | ✅ | 7 工具：配平/元素查询/pH/热力学/平衡/动力学/电化学 |
+| `backend/protocols/mcp/servers/physics_server.py` | **新建** | ✅ | 6 工具：力学/电磁/量子/热力学/光学/误差传递 |
+| `backend/protocols/mcp/servers/verify_server.py` | **新建** | ⏳ | 5 维验证（Phase 3） |
+| `backend/memory/science_kb_ingest.py` | **新建** | ⏳ | 科学知识库摄入管道（Phase 2c） |
+| `backend/memory/embedding.py` | 改动 | ⏳ | 公式感知分块 + 模型可选（Phase 3a） |
+| `backend/agent/engine.py` | 改动 | ⏳ | verify chain 验证钩子（Phase 3c） |
+| `requirements.txt` | 改动 | ✅ | +sympy, scipy, pint, mendeleev |
+
+### 核心能力验证
+
+```
+>>> calculator:  diff(x³+sin(x), x)   → 3*x² + cos(x)      ✅
+>>> chemistry:   Fe + Cl₂ → FeCl₃     → 2Fe + 3Cl₂ → 2FeCl₃ ✅
+>>> physics:     F = k·(1μC)²/(1m)²   → 8.99×10⁻³ N         ✅
+>>> LLM:         "氢原子基态能量？"      → -13.6 eV             ✅
+```
+
+---
+
+## 改造起点（通用 Agent 底座）
 | `.env` | 改动 | DeepSeek → Ollama 配置 |
 
 ### 新增工具（10 个）
@@ -265,42 +258,30 @@ ChromaDB (data/chroma/)
 > 详细设计：[Scientific Computing Agent — Design Spec](docs/superpowers/specs/2026-06-22-scientific-computing-design.md)
 > 实施计划：[Implementation Plan](docs/superpowers/plans/2026-06-22-scientific-computing-plan.md)
 
-### Phase 1：基础设施（3 天）
+### Phase 1：基础设施 ✅ 完成
 
-| Task | 内容 | 工作量 | 测试 gate |
-|------|------|--------|-----------|
-| 1. Ollama 客户端 | `llm_client.py` 重写，连接本地 Ollama | 1-2d | 流式/非流式正常，超时友好 |
-| 2. sympy 计算器 | `tools.py` calculator → sympy 符号引擎 | 2-3d | diff/integrate/solve 正确，代码注入拦截 |
-| 2.5 科学 system prompt | `engine.py` prompt 重写：compute → verify → search → output | 0.5d | prompt 不含 stock_query，含 calculator/quantum 引导 |
-| 3. LaTeX 前端 | KaTeX CDN，chat.js 自动渲染 `$...$` / `$$...$$` | 0.5d | Chrome/Firefox/Edge 渲染正常 |
+| Task | 内容 | 状态 | 测试 |
+|------|------|------|------|
+| 1. Ollama 客户端 | `llm_client.py` 重写 → Ollama | ✅ | 6/6 PASS |
+| 2. sympy 计算器 | `tools.py` → sympy 符号引擎 | ✅ | 11/11 PASS |
+| 2.5 科学 prompt | `engine.py` 重写 compute-first | ✅ | 已验证 |
+| 3. LaTeX 前端 | KaTeX CDN $...$ / $$...$$ | ✅ | 已验证 |
 
-```
-Phase 1a ──╮
-Phase 1b ──┼── 并行
-Phase 1c ──╯
-```
+### Phase 2：领域能力 🔄 进行中
 
-### Phase 2：领域能力（4 天）
+| Task | 内容 | 状态 | 测试 |
+|------|------|------|------|
+| 4. Chemistry Server | 7 化学工具 | ✅ | 9/9 PASS |
+| 5. Physics Server | 6 物理工具 | ✅ | 6/6 PASS |
+| 6. 科学知识库 | 公式感知分块 + ChromaDB | ⏳ | 待做 |
 
-| Task | 内容 | 工作量 | 测试 gate |
-|------|------|--------|-----------|
-| 4. Chemistry Server | `chemistry_server.py` — 7 工具（配平/热力学/平衡/动力学/电化学） | 2-3d | 配平 Fe+Cl₂→FeCl₃，pH 0.1M HCl=1.0 |
-| 5. Physics Server | `physics_server.py` — 6 工具（力学/电磁/量子/光学/误差） | 2-3d | 库仑力=8.99×10⁻³N，He 原子拒绝返回 |
-| 6. 科学知识库 | `science_kb_ingest.py` — 公式感知分块 + ChromaDB + 嵌入模型评估 | 3-5d | 500 items 入库，英文召回达标 |
+### Phase 3：质量保障 ⏳
 
-```
-Phase 2a ──╮
-Phase 2b ──┼── 并行（共享 sympy）
-Phase 2c ──╯ 可与 2a/2b 并行
-```
-
-### Phase 3：质量保障（3 天）
-
-| Task | 内容 | 工作量 | 测试 gate |
-|------|------|--------|-----------|
-| 7. RAG 增强 | 自动标注主题标签 + 置信度分级 + 公式索引 | 2d | 标签准确率 ≥85%，peer-reviewed 排在前 |
-| 8. Verify Server | `verify_server.py` — 量纲/数量级/回代/交叉验证 | 2d | 单条 ≤5s，总计 ≤15s |
-| 9. 验证链 | `engine.py` 加 `_verify_claims()` 钩子 | 1-2d | 提取声明正确，验证报告附加到答案 |
+| Task | 内容 | 状态 |
+|------|------|------|
+| 7. RAG 增强 | 自动标注 + 置信度分级 + 公式索引 | ⏳ |
+| 8. Verify Server | 量纲/数量级/回代/交叉验证 | ⏳ |
+| 9. 验证链 | engine.py `_verify_claims()` 钩子 | ⏳ |
 
 ```
 Phase 3a ──╮
@@ -329,12 +310,12 @@ Phase 3c ──╯（依赖 3a+3b）
 
 ### 总计
 
-| | 工作量 | 日历（并行后） |
-|--|--------|---------------|
-| Phase 1 | 4-6d | 3d |
-| Phase 2 | 7-11d | 4d |
-| Phase 3 | 5-6d | 3d |
-| **合计** | **13-20d** | **10d** |
+| | 工作量 | 日历 | 状态 |
+|--|--------|------|------|
+| Phase 1 | 4-6d | 3d | ✅ 完成 |
+| Phase 2 | 7-11d | 4d | 🔄 2/3 完成 |
+| Phase 3 | 5-6d | 3d | ⏳ 待做 |
+| **合计** | **13-20d** | **10d** | **5/10 Tasks 完成** |
 
 ---
 
