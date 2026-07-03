@@ -70,7 +70,7 @@ async def lifespan(app: FastAPI):
     print(f"数据库已初始化 (chat/agent/memory)")
     print(f"工具注册完成: {total_tools} 个 ({len(LOCAL_TOOLS)} local + {mcp_count} MCP{' [部分失败]' if not mcp_ok else ''})")
     print(f"Agent 模式: react / plan_solve")
-    print(f"DeepSeek: {'已配置' if deepseek else '未配置'}")
+    print(f"LLM: Ollama (qwen3:14b)")
     print(f"API 文档: http://127.0.0.1:8000/docs")
 
     yield
