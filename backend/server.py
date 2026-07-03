@@ -57,13 +57,10 @@ async def lifespan(app: FastAPI):
     for tool in LOCAL_TOOLS:
         tool_registry.register_local(tool)
 
-    # 2. 连接 MCP Server + 发现工具 → freeze（15s 超时保护）
+    # 2. 连接 MCP Server + 发现工具 → freeze
     try:
-        await asyncio.wait_for(tool_registry.initialize(mcp_manager), timeout=15.0)
+        await tool_registry.initialize(mcp_manager)
         mcp_ok = True
-    except asyncio.TimeoutError:
-        print(f"[WARN] MCP Server 初始化超时（15s），仅本地工具可用")
-        mcp_ok = False
     except Exception as e:
         print(f"[WARN] MCP Server 初始化失败（仅本地工具可用）: {e}")
         mcp_ok = False

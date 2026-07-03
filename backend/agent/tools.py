@@ -365,6 +365,52 @@ async def _web_fetch(url: str) -> dict:
 
 # ── 本地工具注册表（供 lifespan 注册到 ToolRegistry）───────────────────
 
+# ── Chemistry + Physics 本地 handler（从 MCP Server 导入纯函数）─────
+
+from ..protocols.mcp.servers.chemistry_server import (
+    _balance_equation, _element_lookup, _calc_ph, _kinetics, _nernst,
+)
+
+async def _chem_balance(equation: str) -> dict:
+    return _balance_equation(equation)
+
+async def _chem_element(query: str) -> dict:
+    return _element_lookup(query)
+
+async def _chem_ph(acid: str = "HCl", concentration: float = 0.1) -> dict:
+    return _calc_ph(acid, concentration)
+
+async def _chem_kinetics(order: int, k: float, concentration: float, time: float) -> dict:
+    return _kinetics(order, k, concentration, time)
+
+async def _chem_nernst(half_reaction: str, concentration: float, temperature: float = 298) -> dict:
+    return _nernst(half_reaction, concentration, temperature)
+
+from ..protocols.mcp.servers.physics_server import (
+    _mechanics_kinematics, _coulomb_force, _harmonic_oscillator,
+    _infinite_well_ground, _quantum_handler, _carnot_efficiency,
+    _error_propagation,
+)
+
+async def _phys_mechanics(u: float = None, v: float = None, a: float = None,
+                          t: float = None, s: float = None) -> dict:
+    return _mechanics_kinematics(u, v, a, t, s)
+
+async def _phys_coulomb(q1: float, q2: float, r: float) -> dict:
+    return _coulomb_force(q1, q2, r)
+
+async def _phys_quantum(system: str, L: float = None, mass: float = None,
+                        k: float = None, n: int = None) -> dict:
+    kw = {k: v for k, v in [("L", L), ("mass", mass), ("k", k), ("n", n)] if v is not None}
+    return _quantum_handler(system, **kw)
+
+async def _phys_thermo(T_hot: float, T_cold: float) -> dict:
+    return _carnot_efficiency(T_hot, T_cold)
+
+async def _phys_error(values: str, uncertainties: str, operation: str) -> dict:
+    return _error_propagation(values, uncertainties, operation)
+
+
 LOCAL_TOOLS: list[Tool] = [
     Tool(
         name="web_search",
@@ -416,5 +462,67 @@ LOCAL_TOOLS: list[Tool] = [
             "required": ["seconds"],
         },
         handler=_timer_set,
+    ),
+    # ── Chemistry tools ─────────────────────────────────────────────
+    Tool(
+        name="balance_equation",
+        description="配平化学方程式。输入如 'CH4 + O2 -> CO2 + H2O'。",
+        parameters={"type": "object", "properties": {"equation": {"type": "string"}}, "required": ["equation"]},
+        handler=_chem_balance,
+    ),
+    Tool(
+        name="element_lookup",
+        description="查询元素或化合物属性。元素符号如'H'/'Fe'返回原子序数/原子量/电负性；化学式如'H2SO4'返回分子量和组成。",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        handler=_chem_element,
+    ),
+    Tool(
+        name="solution_chem",
+        description="计算溶液pH。acid='HCl'/'CH3COOH', concentration in mol/L。",
+        parameters={"type": "object", "properties": {"acid": {"type": "string"}, "concentration": {"type": "number"}}, "required": ["acid", "concentration"]},
+        handler=_chem_ph,
+    ),
+    Tool(
+        name="kinetics",
+        description="反应动力学计算。order (0/1/2), k (速率常数), concentration (mol/L), time (s)。",
+        parameters={"type": "object", "properties": {"order": {"type": "integer"}, "k": {"type": "number"}, "concentration": {"type": "number"}, "time": {"type": "number"}}, "required": ["order", "k", "concentration", "time"]},
+        handler=_chem_kinetics,
+    ),
+    Tool(
+        name="electrochem",
+        description="电化学Nernst方程。half_reaction如'Cu2+ + 2e- -> Cu', concentration (mol/L)。",
+        parameters={"type": "object", "properties": {"half_reaction": {"type": "string"}, "concentration": {"type": "number"}, "temperature": {"type": "number"}}, "required": ["half_reaction", "concentration"]},
+        handler=_chem_nernst,
+    ),
+    # ── Physics tools ───────────────────────────────────────────────
+    Tool(
+        name="mechanics",
+        description="运动学计算。提供u/v/a/t/s中至少3个求其余。",
+        parameters={"type": "object", "properties": {"u": {"type": "number"}, "v": {"type": "number"}, "a": {"type": "number"}, "t": {"type": "number"}, "s": {"type": "number"}}},
+        handler=_phys_mechanics,
+    ),
+    Tool(
+        name="electromagnetism",
+        description="库仑力计算 F=k*q1*q2/r²。",
+        parameters={"type": "object", "properties": {"q1": {"type": "number"}, "q2": {"type": "number"}, "r": {"type": "number"}}, "required": ["q1", "q2", "r"]},
+        handler=_phys_coulomb,
+    ),
+    Tool(
+        name="quantum",
+        description="量子力学计算（仅解析可解模型）。system: infinite_well/harmonic_oscillator/hydrogen_atom。多电子体系(He,Li等)返回拒绝信息。",
+        parameters={"type": "object", "properties": {"system": {"type": "string"}, "L": {"type": "number"}, "mass": {"type": "number"}, "k": {"type": "number"}, "n": {"type": "integer"}}, "required": ["system"]},
+        handler=_phys_quantum,
+    ),
+    Tool(
+        name="thermodynamics",
+        description="热力学卡诺循环效率 eta=1-Tc/Th。",
+        parameters={"type": "object", "properties": {"T_hot": {"type": "number"}, "T_cold": {"type": "number"}}, "required": ["T_hot", "T_cold"]},
+        handler=_phys_thermo,
+    ),
+    Tool(
+        name="error_propagation",
+        description="误差传递计算。values/uncertainties为JSON数组字符串，operation: add/subtract/multiply/divide。",
+        parameters={"type": "object", "properties": {"values": {"type": "string"}, "uncertainties": {"type": "string"}, "operation": {"type": "string"}}, "required": ["values", "uncertainties", "operation"]},
+        handler=_phys_error,
     ),
 ]
