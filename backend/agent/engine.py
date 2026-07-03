@@ -32,7 +32,7 @@ from ..evaluation.hooks import on_task_completed
 # Token 预算
 TOKEN_BUDGET = 90_000
 MAX_OBS_TOKENS = 2000
-LLM_MODEL = os.environ.get("LLM_MODEL_ID", "deepseek-chat")
+LLM_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:14b")
 
 AGENT_SYSTEM_PROMPT = """You are a scientific computing agent. You answer chemistry and physics questions using computational tools — NOT web search first. Your answers MUST be accurate, sourced, and formatted for students.
 

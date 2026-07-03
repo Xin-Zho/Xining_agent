@@ -44,7 +44,10 @@ class MCPClientManager:
     def __init__(self, project_root: str):
         # Dynamic import for module names matching server filenames
         import importlib.util
-        self._server_configs: dict[str, MCPServerConfig] = {
+        # MCP servers disabled for now — anyio/Python 3.12 transport broken on WSL2.
+        # Local tools (14) cover all scientific computing needs.
+        # Re-enable when MCP SDK fixes cancel scope compatibility.
+        _mcp_disabled: dict[str, MCPServerConfig] = {
             "filesystem-read": MCPServerConfig(
                 cmd=[sys.executable, "-m", "backend.protocols.mcp.servers.filesystem_read_server"],
                 env={"AGENT_PROJECT_ROOT": project_root},
@@ -66,6 +69,7 @@ class MCPClientManager:
                 env={"AGENT_PROJECT_ROOT": project_root},
             ),
         }
+        self._server_configs: dict[str, MCPServerConfig] = {}  # empty → no MCP init
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._tools: dict[str, list[dict]] = {}
