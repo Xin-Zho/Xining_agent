@@ -166,133 +166,14 @@ class AgentEngine:
 
         tool_schemas = [t.to_openai_schema() for t in self.tools]
 
-        # ── 简单问题直接回答（无工具、无规划）──
-        # 剥掉 SSE 包装前缀，用原始用户问题做判断
+        # ── 科学计算 Agent：所有问题都走工具路径 ──
+        # 科学问题明确性高，跳过复杂度判断，直接给 LLM 全套工具
         raw_question = task_description.split("## 当前任务\n")[-1] if "## 当前任务" in task_description else task_description
-        # 明确需要搜索/工具的关键词 → 不走简单路径
-        needs_tools = any(w in raw_question for w in [
-            "搜", "查", "找", "分析", "生成", "创建", "下载", "股票",
-            "天气", "新闻", "最新", "实时", "今天", "现在", "当前",
-            "帮我写", "帮我做", "帮我查", "计算", "预测", "比较",
-            "世界杯", "球赛", "比分", "谁会赢", "比赛", "走势",
-            "推荐", "评测", "攻略", "教程", "价格", "多少钱",
-            "A股", "涨幅", "跌", "行情", "Excel", "excel", "表格",
-            "报告", "文档", "数据", "排名", "列表", "整理",
-            # Scientific computing triggers
-            "求", "解", "算", "推导", "证明", "化简", "积分", "微分",
-            "方程", "公式", "配平", "摩尔", "pH", "浓度", "反应",
-            "热力学", "量子", "力学", "电磁", "光学", "误差",
-            "eV", "kJ", "mol", "焓", "熵", "Gibbs", "Nernst",
-            "波函数", "本征值", "谐振子", "势阱", "氢原子",
-            "能级", "光谱", "衍射", "干涉",
-        ])
-        if needs_tools:
-            # 本地关键词命中 → 直接走复杂路径，不让 LLM 推翻
-            is_simple = False
-        else:
-            # 本地判为"可能简单"，LLM 二次确认
-            is_simple = (
-                len(raw_question) <= 15 or
-                any(w in raw_question for w in ["你好", "谢谢", "再见", "哈哈", "嗯", "哦", "好", "OK", "Hi", "hi"])
-            )
-            if not is_simple:
-                # 边界情况 → LLM 判断
-                raw_question2 = task_description.split("## 当前任务\n")[-1] if "## 当前任务" in task_description else task_description
-                try:
-                    check_resp = await self._call_llm([
-                        {"role": "system", "content": "Does this task require web_search, file operations, or external data? If yes → 'complex'. If pure conversation/knowledge question → 'simple'. Answer ONLY one word."},
-                        {"role": "user", "content": raw_question2},
-                    ], None)
-                    is_simple = "simple" in (check_resp.choices[0].message.content or "").strip().lower()
-                except Exception:
-                    is_simple = False
+        is_simple = False
 
-        print(f"[ENGINE] is_simple={is_simple} raw_question='{raw_question[:80]}' task_id={task_id}", flush=True)
+        print(f"[ENGINE] SCI-COMPUTE path, raw_question='{raw_question[:80]}' task_id={task_id}", flush=True)
 
-        if is_simple:
-            print(f"[ENGINE] Taking SIMPLE path for task {task_id}", flush=True)
-            try:
-                direct_messages = [
-                    {"role": "system", "content": "你是一个智能聊天助手。直接回答用户的问题，不要提'任务'或'完成'。用自然的口语。可以用工具查事实但要快。用中文回答。"},
-                    {"role": "user", "content": raw_question},
-                ]
-                direct_resp = await self._call_llm(direct_messages, tool_schemas if len(raw_question) > 20 else None)
-                total_tokens = (direct_resp.usage.total_tokens if direct_resp.usage else 0)
-                final_answer = direct_resp.choices[0].message.content or ""
-
-                # 如果 LLM 调了工具，执行并追答
-                msg = direct_resp.choices[0].message
-                if msg.tool_calls:
-                    step_number = 0
-                    for tc in msg.tool_calls[:2]:  # 最多2个工具
-                        step_number += 1
-                        tool = self.tool_map.get(tc.function.name)
-                        if tool:
-                            try:
-                                args = json.loads(tc.function.arguments)
-                            except json.JSONDecodeError:
-                                args = {}
-                            # 保存步骤记录（SSE 流需要此记录来检测确认状态）
-                            _save_step(task_id, step_number, "tool_call",
-                                       status="running", tool_name=tool.name, tool_args=args)
-                            # assistant 消息必须在 tool 消息之前（API 要求）
-                            tc_block = {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                            direct_messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": [tc_block]})
-                            try:
-                                obs = await self._execute_tool_with_retry(
-                                    tool, args, tool.name, max_retries=3,
-                                    step_num=step_number,
-                                )
-                                obs_str = json.dumps(obs, ensure_ascii=False)[:2000]
-                                direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": obs_str})
-                            except Exception as e:
-                                direct_messages.append({"role": "tool", "tool_call_id": tc.id, "content": f"Error: {e}"})
-                    final_resp = await self._call_llm(direct_messages, None)
-                    total_tokens += (final_resp.usage.total_tokens if final_resp.usage else 0)
-                    final_answer = final_resp.choices[0].message.content or final_answer
-
-                if not final_answer.strip():
-                    final_answer = "你好！有什么可以帮你的？"
-
-                # 简单路径也保存记忆（过滤纯闲聊）
-                if len(final_answer) > 30 and not any(w == raw_question for w in ["你好", "谢谢", "再见", "OK", "Hi", "hi"]):
-                    try:
-                        await self._mem_mgr.add(
-                            content=f"Q: {raw_question[:80]}\nA: {final_answer[:200]}",
-                            memory_type="episodic",
-                            importance=0.4,
-                        )
-                    except Exception:
-                        pass
-
-                duration_ms = int((time.time() - start_time) * 1000)
-                _update_task(task_id, status="completed", final_answer=final_answer,
-                             total_tokens=total_tokens, duration_ms=duration_ms)
-                await self.ws.broadcast(task_id, "task_complete", {
-                    "final_answer": final_answer,
-                    "total_steps": 1,
-                    "total_tokens": total_tokens,
-                    "duration_ms": duration_ms,
-                })
-                asyncio.create_task(on_task_completed(task_id))
-                if self.intervention:
-                    await self.intervention.complete_task(task_id_str)
-                return
-            except Exception as e:
-                logger.error(f"Simple path failed for task {task_id}: {e}")
-                error_msg = f"处理失败: {str(e)}"
-                _update_task(task_id, status="failed", final_answer=error_msg,
-                             total_tokens=0, duration_ms=int((time.time() - start_time) * 1000))
-                await self.ws.broadcast(task_id, "task_error", {
-                    "error": error_msg,
-                    "last_step": 0,
-                })
-                asyncio.create_task(on_task_completed(task_id))
-                if self.intervention:
-                    await self.intervention.complete_task(task_id_str)
-                return
-
-        print(f"[ENGINE] Taking COMPLEX path for task {task_id}, system_prompt_len={len(system_prompt)}", flush=True)
+        print(f"[ENGINE] Taking SCI-COMPUTE path for task {task_id}, system_prompt_len={len(system_prompt)}", flush=True)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"请完成以下任务：\n\n{task_description}\n\n先分析任务，然后逐步执行。每个步骤都要记录。最后给出完整的总结。"},
