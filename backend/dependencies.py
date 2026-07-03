@@ -16,7 +16,6 @@ from .training import DialogueLogger
 
 # ── Config ──────────────────────────────────────────────────────────────
 
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 ALLOW_REGISTRATION = os.environ.get("ALLOW_REGISTRATION", "false").strip().lower() != "false"
 INVITE_CODE = os.environ.get("INVITE_CODE", "xin-agent-2026")
 MAX_HISTORY_ROUNDS = 20
@@ -32,36 +31,32 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 STATIC_DIR = os.path.join(str(PROJECT_ROOT), "web", "static")
 
-
-def _has_valid_deepseek_key() -> bool:
-    return bool(DEEPSEEK_API_KEY and DEEPSEEK_API_KEY != "your-api-key-here")
-
-
 # ── Singletons ──────────────────────────────────────────────────────────
 
 import httpx as _httpx
+from .llm_client import OLLAMA_BASE_URL, OLLAMA_MODEL, LLM_API_KEY
+
 _LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300"))
 _LLM_CONNECT_TIMEOUT = float(os.environ.get("LLM_CONNECT_TIMEOUT", "15"))
 _STEP_TIMEOUT = float(os.environ.get("STEP_TIMEOUT", "120"))
 _AGENT_STREAM_TIMEOUT = float(os.environ.get("AGENT_STREAM_TIMEOUT", "300"))
+
+# Ollama OpenAI-compatible client (replaces DeepSeek)
 deepseek = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com",
+    api_key=LLM_API_KEY,
+    base_url=OLLAMA_BASE_URL,
     timeout=_httpx.Timeout(_LLM_TIMEOUT, connect=_LLM_CONNECT_TIMEOUT),
-) if _has_valid_deepseek_key() else None
+)
 
 ws_manager = WebSocketManager()
 intervention_handler = InterventionHandler()
-llm_client = LLMClient() if deepseek else None
+llm_client = LLMClient()
 ctx_manager = ContextBuilder(llm_client=llm_client)
 dialogue_logger = DialogueLogger()
 
 # Tool Registry & MCP Manager
 tool_registry = ToolRegistry()
 mcp_manager = MCPClientManager(project_root=str(PROJECT_ROOT))
-
-if deepseek is None:
-    raise RuntimeError("DEEPSEEK_API_KEY is required to run Agent engine.")
 
 
 def get_engine(agent_mode: str):

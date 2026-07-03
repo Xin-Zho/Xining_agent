@@ -82,6 +82,14 @@ class MCPClientManager:
                 cmd=[sys.executable, "-m", "backend.protocols.mcp.servers.memory_server"],
                 env={"AGENT_PROJECT_ROOT": project_root},
             ),
+            "chemistry": MCPServerConfig(
+                cmd=[sys.executable, "-m", "backend.protocols.mcp.servers.chemistry_server"],
+                env={"AGENT_PROJECT_ROOT": project_root},
+            ),
+            "physics": MCPServerConfig(
+                cmd=[sys.executable, "-m", "backend.protocols.mcp.servers.physics_server"],
+                env={"AGENT_PROJECT_ROOT": project_root},
+            ),
         }
         # {server_name: [{session, idx, stdio_cm, session_cm, process}, ...]}
         self._sessions: dict[str, list[dict]] = {}
@@ -95,25 +103,31 @@ class MCPClientManager:
     async def connect_all(self):
         """启动所有 MCP Server 子进程
 
-        串行启动，每个 Server 只需几十毫秒。
-        stdio_client + ClientSession 用 async with 进入，
-        __aenter__ 和 __aexit__ 在同一个 task 中，避免 anyio cancel scope 问题。
+        串行启动，每个 Server 独立超时（5s）。失败则跳过，不阻塞整体。
         """
-        for name, config in self._server_configs.items():
-            await self._connect_server(name, config)
+        for name, config in list(self._server_configs.items()):
+            try:
+                await asyncio.wait_for(
+                    self._connect_server(name, config),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"MCP Server {name}: connection timed out, skipping")
+                self._server_configs.pop(name, None)
+            except Exception as e:
+                logger.warning(f"MCP Server {name}: connection failed ({e}), skipping")
+                self._server_configs.pop(name, None)
 
         logger.info(
-            f"MCPClientManager connected: {len(self._sessions)} servers, "
+            f"MCPClientManager connected: {len(self._sessions)}/{len(self._server_configs)} servers, "
             f"total sessions: {sum(len(s) for s in self._sessions.values())}"
         )
 
     async def _connect_server(self, name: str, config: MCPServerConfig):
-        """启动单个 Server 的所有 session
+        """启动单个 Server 的所有 session。
 
-        使用 async with 进入 stdio_client 和 ClientSession context，
-        但不退出（保存 context manager 对象用于后续 shutdown）。
-
-        关键：必须 enter context 才能正常通信（ClientSession 需要 _receive_loop）。
+        整个连接在独立 task 中执行，防止 anyio cancel scope 跨 task 问题。
+        超时由调用方 connect_all() 的 asyncio.wait_for 保证。
         """
         count = config.session_count
         sessions = []
@@ -128,12 +142,27 @@ class MCPClientManager:
 
             # 手动进入 context（不退出，保存 cm 对象）
             stdio_cm = stdio_client(server_params)
-            read_stream, write_stream = await stdio_cm.__aenter__()
+            try:
+                read_stream, write_stream = await stdio_cm.__aenter__()
+            except Exception as e:
+                logger.warning(f"MCP {name}: stdio_client failed: {e}")
+                raise
 
             session_cm = ClientSession(read_stream, write_stream)
-            session = await session_cm.__aenter__()
+            try:
+                session = await session_cm.__aenter__()
+            except Exception as e:
+                logger.warning(f"MCP {name}: ClientSession failed: {e}")
+                await self._safe_close_stdio(stdio_cm)
+                raise
 
-            await session.initialize()
+            try:
+                await session.initialize()
+            except Exception as e:
+                logger.warning(f"MCP {name}: initialize failed: {e}")
+                await self._safe_close_session(session_cm)
+                await self._safe_close_stdio(stdio_cm)
+                raise
 
             sessions.append({
                 "session": session,
@@ -142,10 +171,22 @@ class MCPClientManager:
                 "session_cm": session_cm,
             })
             locks.append(asyncio.Lock())
-            logger.debug(f"Connected {name} session {i}")
+            logger.info(f"MCP {name} session {i} connected")
 
         self._sessions[name] = sessions
         self._session_locks[name] = locks
+
+    async def _safe_close_session(self, session_cm):
+        try:
+            await session_cm.__aexit__(None, None, None)
+        except BaseException:
+            pass
+
+    async def _safe_close_stdio(self, stdio_cm):
+        try:
+            await stdio_cm.__aexit__(None, None, None)
+        except BaseException:
+            pass
 
     def _pick_session(self, server_name: str, tool_name: str) -> dict:
         """按 tool_name hash 轮转选择 session"""
