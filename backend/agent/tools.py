@@ -6,7 +6,7 @@
   - timer_set: 异步延时
 
 已迁移到 MCP Server：
-  - web_search, web_fetch, stock_query  → network_server
+  - web_search, web_fetch  → network_server
   - read_file, read_pdf, grep_files, glob_files  → filesystem_read_server
   - edit_file  → filesystem_write_server
   - execute_command  → shell_server
@@ -363,67 +363,6 @@ async def _web_fetch(url: str) -> dict:
         return {"error": str(e), "url": url}
 
 
-async def _stock_query(action: str = "top", market: str = "a", count: int = 10) -> dict:
-    """查询 A 股实时行情（进程内，不经过 MCP）"""
-    try:
-        import httpx
-
-        sort_map = {"top": "changepercent", "down": "changepercent", "volume": "volume"}
-        order_map = {"top": 0, "down": 1, "volume": 0}
-        market_nodes = {"a": "hs_a", "kcb": "kcb", "cyb": "cyb"}
-
-        node = market_nodes.get(market, "hs_a")
-        sort_field = sort_map.get(action, "changepercent")
-        asc = order_map.get(action, 0)
-
-        url = (
-            f"http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
-            f"Market_Center.getHQNodeData?"
-            f"page=1&num={count}&sort={sort_field}&asc={asc}"
-            f"&node={node}&symbol=&_s_r_a=auto"
-        )
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://finance.sina.com.cn/",
-        }
-
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, headers=headers)
-            data = resp.json()
-
-        stocks = []
-        for item in data:
-            stocks.append({
-                "code": item.get("code", ""),
-                "name": item.get("name", ""),
-                "price": float(item.get("trade", 0)),
-                "change_pct": float(item.get("changepercent", 0)),
-                "change_amount": float(item.get("pricechange", 0)),
-                "volume_hand": int(item.get("volume", 0)),
-                "turnover_yuan": int(item.get("amount", 0)),
-                "high": float(item.get("high", 0)),
-                "low": float(item.get("low", 0)),
-                "open": float(item.get("open", 0)),
-                "pre_close": float(item.get("settlement", 0)),
-            })
-
-        if not stocks:
-            return {"error": "stock_query仅覆盖A股（沪深/科创/创业板）",
-                    "hint": "该股票不在A股范围。请立即改用 web_search 搜索美股/港股行情", "stocks": []}
-
-        action_names = {"top": "涨幅榜", "down": "跌幅榜", "volume": "成交量榜"}
-        return {
-            "action": action_names.get(action, action),
-            "market": market,
-            "count": len(stocks),
-            "stocks": stocks[:count],
-        }
-    except Exception as e:
-        return {"error": str(e), "action": action,
-                "hint": "新浪接口可能暂时不可用，建议用 web_search 搜索股票行情替代"}
-
-
 # ── 本地工具注册表（供 lifespan 注册到 ToolRegistry）───────────────────
 
 LOCAL_TOOLS: list[Tool] = [
@@ -452,20 +391,6 @@ LOCAL_TOOLS: list[Tool] = [
             "required": ["url"],
         },
         handler=_web_fetch,
-    ),
-    Tool(
-        name="stock_query",
-        description="查询A股实时行情。action='top'涨幅榜/'down'跌幅榜/'volume'成交量榜。市场: a=A股/kcb=科创板/cyb=创业板。",
-        parameters={
-            "type": "object",
-            "properties": {
-                "action": {"type": "string", "description": "查询类型: top(涨幅榜), down(跌幅榜), volume(成交量榜)"},
-                "market": {"type": "string", "description": "市场: a(A股), kcb(科创板), cyb(创业板)"},
-                "count": {"type": "integer", "description": "返回数量，默认10"},
-            },
-            "required": ["action"],
-        },
-        handler=_stock_query,
     ),
     Tool(
         name="calculator",
