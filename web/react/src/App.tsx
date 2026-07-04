@@ -118,6 +118,7 @@ export default function App() {
     conv.messages.push({ role: 'user', content: text })
     conv.updatedAt = Date.now()
     api.saveConvs(convs)
+    setConvs([...convs])
 
     setStreaming(true); setStreamingContent(''); setAgentSteps([])
     setThinkingText(''); setShowThinking(false)
