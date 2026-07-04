@@ -41,29 +41,6 @@ export default function App() {
   const [confirmationTimer, setConfirmationTimer] = useState(60)
 
   const abortRef = useRef<AbortController | null>(null)
-  const msgEndRef = useRef<HTMLDivElement>(null)
-
-  // KaTeX auto-render after messages update
-  useEffect(() => {
-    const container = msgEndRef.current?.parentElement
-    if (!container) return
-    const timer = setTimeout(() => {
-      if ((window as any).renderMathInElement) {
-        try {
-          (window as any).renderMathInElement(container, {
-            delimiters: [
-              { left: '$$', right: '$$', display: true },
-              { left: '$', right: '$', display: false },
-              { left: '\\(', right: '\\)', display: false },
-              { left: '\\[', right: '\\]', display: true },
-            ],
-            throwOnError: false,
-          })
-        } catch {}
-      }
-    }, 200)
-    return () => clearTimeout(timer)
-  }, [messages])
 
   // Init
   useEffect(() => {
@@ -384,7 +361,6 @@ export default function App() {
                   </MessageContent>
                 </Message>
               )}
-              <div ref={msgEndRef} style={{ height: 0 }} />
             </ConversationContent>
           </Conversation>
         ) : (
