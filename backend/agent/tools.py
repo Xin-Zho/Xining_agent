@@ -411,6 +411,18 @@ async def _phys_error(values: str, uncertainties: str, operation: str) -> dict:
     return _error_propagation(values, uncertainties, operation)
 
 
+# ── Knowledge base handlers ───────────────────────────────────────────
+
+async def _rag_search_local(query: str, collection: str = "all", top_k: int = 5) -> dict:
+    from ..memory.science_kb_ingest import search_knowledge
+    return search_knowledge(query, collection, top_k)
+
+async def _rag_ingest_local(content: str, source_url: str, title: str = "",
+                            collection: str = "user_uploads") -> dict:
+    from ..memory.science_kb_ingest import ingest_science_document
+    return ingest_science_document(content, source_url, title, collection)
+
+
 LOCAL_TOOLS: list[Tool] = [
     Tool(
         name="web_search",
@@ -524,5 +536,18 @@ LOCAL_TOOLS: list[Tool] = [
         description="误差传递计算。values/uncertainties为JSON数组字符串，operation: add/subtract/multiply/divide。",
         parameters={"type": "object", "properties": {"values": {"type": "string"}, "uncertainties": {"type": "string"}, "operation": {"type": "string"}}, "required": ["values", "uncertainties", "operation"]},
         handler=_phys_error,
+    ),
+    # ── Knowledge base tools ──────────────────────────────────────────
+    Tool(
+        name="rag_search",
+        description="搜索科学知识库。collection可选: 'all'(全部), 'science_kb'(公开权威源), 'user_uploads'(用户上传)。",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}, "collection": {"type": "string"}, "top_k": {"type": "integer"}}, "required": ["query"]},
+        handler=_rag_search_local,
+    ),
+    Tool(
+        name="rag_ingest",
+        description="将文档摄入知识库。collection: 'science_kb' 或 'user_uploads'。",
+        parameters={"type": "object", "properties": {"content": {"type": "string"}, "source_url": {"type": "string"}, "title": {"type": "string"}, "collection": {"type": "string"}}, "required": ["content", "source_url"]},
+        handler=_rag_ingest_local,
     ),
 ]
