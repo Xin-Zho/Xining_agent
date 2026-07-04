@@ -1,180 +1,34 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<title>XinAgent</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/app.css?v=5">
-<!-- KaTeX for LaTeX rendering -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
-      integrity="sha384-nB0miv6/jRmo5r4cy45FVFXUuoi8Tq5l5qkOz2VG1Ldv6z0TG3YaxK5RH1t0dnN" crossorigin="anonymous">
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
-        integrity="sha384-RjJnfLt0RqFQ2H2Khzy6+zyyYj6Zr1kHY2Vh8r6a7QH0lBbP04YI6kSOHSgNbkM" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
-        integrity="sha384-+VBxd3r6XgURycqtZ117nYw44OOcIax4ZZB6zTI7u1q8+UMGOao7L0KqCIS5Vxm" crossorigin="anonymous"></script>
-</head>
-<body>
-
-<div id="app">
-  <!-- Sidebar -->
-  <nav id="sidebar">
-    <div class="sidebar-header">
-      <button onclick="App.newConversation()">+ 新建对话</button>
-    </div>
-    <div class="sidebar-body">
-      <div class="sidebar-section">
-        <div class="sidebar-section-title">对话</div>
-        <div id="convList"></div>
-      </div>
-      <div class="sidebar-section">
-        <div class="sidebar-section-title">AGENT</div>
-        <div class="agent-item" onclick="App.selectAgent(null)" data-agent-id="">
-          <span class="agent-icon">🤖</span> <span class="title">默认助手</span>
-        </div>
-        <div id="agentList"></div>
-        <div class="agent-item create-agent" onclick="App.openAgentModal()">
-          <span class="agent-icon">＋</span> <span class="title">创建 Agent</span>
-        </div>
-      </div>
-    </div>
-    <div class="sidebar-footer">
-      <span id="sidebarUser">用户</span>
-      <select onchange="App.onFontSizeChange()" id="fontSizeSelect" title="字体大小">
-        <option value="normal">A</option>
-        <option value="large">A+</option>
-      </select>
-      <button class="eval-link" onclick="Eval.open()">📊</button>
-      <button class="logout-btn" onclick="Auth.logout()">退出</button>
-    </div>
-  </nav>
-
-  <!-- Overlay -->
-  <div id="overlay" onclick="App.closeSidebar()"></div>
-
-  <!-- Main -->
-  <div id="main">
-    <!-- Header -->
-    <div id="header">
-      <button class="hamburger" onclick="App.toggleSidebar()">☰</button>
-      <span class="title">Xin</span>
-      <span class="badge active" id="agentBadge" style="display:none">Agent</span>
-      <span id="headerSub" style="font-size:12px;color:var(--text-secondary)"></span>
-      <button onclick="window.open('/downloads?token='+encodeURIComponent(App.userToken),'_blank')" title="下载文件">📥</button>
-      <select onchange="App.onAgentModeChange()" id="modeSelect" title="运行模式">
-        <option value="react">🤖 Agent</option>
-        <option value="normal">💬 对话</option>
-      </select>
-    </div>
-
-    <!-- Messages -->
-    <div id="messages">
-      <div id="emptyState">
-        <div class="icon">💬</div>
-        <div class="text">新建一个对话开始聊天</div>
-      </div>
-    </div>
-
-    <!-- Input -->
-    <div id="inputArea">
-      <div id="tokenBar" style="display:none">
-        <span>📊 <span id="tokenPct">0%</span></span>
-        <div class="bar-bg"><div class="bar-fill" style="width:0%"></div></div>
-        <span id="tokenDetail" style="font-size:11px"></span>
-      </div>
-      <div class="input-card">
-        <div id="attachTags"></div>
-        <div id="inputRow">
-          <input type="file" id="fileInput" multiple hidden onchange="Chat.handleFileSelect(this.files)">
-          <button onclick="document.getElementById('fileInput').click()" title="上传文件">📎</button>
-          <textarea id="msgInput" rows="1" placeholder="输入消息...（Shift+Enter 换行）" onkeydown="Chat.handleKeyDown(event)"></textarea>
-          <button id="sendBtn" onclick="Chat.sendMessage()">➤</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Evaluation Page -->
-  <div id="evalPage">
-    <div class="eval-header">
-      <button class="back-btn" onclick="Eval.close()">←</button>
-      <h2>Agent 评估</h2>
-    </div>
-    <div class="eval-tabs">
-      <button class="eval-tab active" onclick="Eval.switchTab('overview')">📈 总览</button>
-      <button class="eval-tab" onclick="Eval.switchTab('weaknesses')">⚠️ 弱点</button>
-      <button class="eval-tab" onclick="Eval.switchTab('recommendations')">💡 建议</button>
-    </div>
-    <div class="eval-body" id="evalOverview"></div>
-    <div class="eval-body" id="evalWeaknesses" hidden></div>
-    <div class="eval-body" id="evalRecommendations" hidden></div>
-  </div>
-</div>
-
-<!-- Auth Page -->
-<div id="authPage">
-    <div class="auth-card">
-      <h1 id="authTitle">登录</h1>
-      <div class="sub" id="authSubtitle">欢迎回来</div>
-      <label style="display:none" for="authUser">用户名</label>
-      <input id="authUser" placeholder="用户名" title="用户名" autocomplete="username">
-      <label style="display:none" for="authPass">密码</label>
-      <input id="authPass" type="password" placeholder="密码" title="密码" autocomplete="current-password">
-      <div id="authCodeLabel" style="display:none"><input id="authCode" placeholder="邀请码"></div>
-      <button id="authBtn" onclick="Auth.handleAuth()"><span class="spinner"></span><span class="btn-text">登 录</span></button>
-      <div id="authError"></div>
-      <div style="margin-top:12px;font-size:13px">
-        <span id="switchText">没有账号？</span>
-        <span id="switchLink" onclick="Auth.toggleAuthMode()">注册</span>
-      </div>
-    </div>
-  </div>
-
-<!-- Agent Modal -->
-<div class="modal-overlay" id="agentModalOverlay" onclick="if(event.target===this)App.closeAgentModal()">
-  <div class="modal">
-    <h3 id="agentModalTitle">创建 Agent</h3>
-    <input id="agentName" placeholder="Agent 名称">
-    <input id="agentDesc" placeholder="简短描述">
-    <textarea id="agentPrompt" placeholder="System Prompt（告诉 Agent 如何表现）" rows="4"></textarea>
-    <input id="agentEditId" hidden>
-    <div class="actions">
-      <button class="secondary-btn" onclick="App.closeAgentModal()">取消</button>
-      <button class="primary-btn" onclick="App.saveAgent()">保存</button>
-    </div>
-  </div>
-</div>
-
-<!-- Confirm Modal -->
-<div class="modal-overlay" id="confirmOverlay">
-  <div class="modal">
-    <h3>⚠️ 确认工具执行</h3>
-    <div id="confirmToolName" style="font-weight:600"></div>
-    <div class="tool-info" id="confirmArgs"></div>
-    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px" id="confirmTimer">60s 后自动拒绝</div>
-    <div class="actions">
-      <button class="secondary-btn" onclick="Agent.confirmTool(false)">拒绝</button>
-      <button class="primary-btn" onclick="Agent.confirmTool(true)">确认执行</button>
-    </div>
-  </div>
-</div>
-
-<!-- Changelog Toast -->
-<div id="changelogToast">
-  <button class="close" onclick="document.getElementById('changelogToast').classList.remove('show')">×</button>
-  <div id="changelogContent"></div>
-</div>
-
-<script src="/static/js/utils.js?v=5"></script>
-<script src="/static/js/auth.js?v=5"></script>
-<script src="/static/js/chat.js?v=5"></script>
-<script src="/static/js/agent.js?v=5"></script>
-<script src="/static/js/eval.js?v=5"></script>
-<script src="/static/js/app.js?v=5"></script>
-
-</body>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>XinAgent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script type="module" crossorigin src="/static/assets/index-08-cbygY.js"></script>
+    <link rel="modulepreload" crossorigin href="/static/assets/rolldown-runtime-CNC7AqOf.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/preload-helper-DTFqFEi-.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/chunk-Y2CYZVJY-DsF7k-Jl.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/src-Cz8bXOH0.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/chunk-WYO6CB5R-nBuEreJ3.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/dist-BH9bKIvu.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/chunk-ICXQ74PX-_lO2yEgL.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/path-BWPyau1x.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/array-BifhSqXX.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/line-Dm2J59xj.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/chunk-C7G6YPKG-CqR2ntCq.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/chunk-OGEWGWER-Bhk5JMxM.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/chunk-HOUHSVGY-B1aBlaPe.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/chunk-Q4XR5HBZ-YxHGrgw9.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/rough.esm-CSKSodPl.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/chunk-ZGVPDNZ5-DdpLQO2K.js">
+    <link rel="modulepreload" crossorigin href="/static/assets/chunk-7BUUIJ7U-Bb538aSH.js">
+    <link rel="stylesheet" crossorigin href="/static/assets/index-B-9vWKXG.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
 </html>

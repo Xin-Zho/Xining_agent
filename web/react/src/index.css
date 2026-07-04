@@ -1,0 +1,60 @@
+@import 'tailwindcss';
+
+@plugin "tailwindcss-animate";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: #f7f8fb;
+  --foreground: #1f2937;
+  --card: #ffffff;
+  --card-foreground: #1f2937;
+  --popover: #ffffff;
+  --popover-foreground: #1f2937;
+  --primary: #5b63f1;
+  --primary-foreground: #ffffff;
+  --secondary: #f3f4f8;
+  --secondary-foreground: #374151;
+  --muted: #f3f4f8;
+  --muted-foreground: #8a8f9c;
+  --accent: #eef0ff;
+  --accent-foreground: #5b63f1;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #e5e7eb;
+  --input: #e5e7eb;
+  --ring: #5b63f1;
+  --radius: 0.625rem;
+  --sidebar-background: #f3f4f8;
+  --sidebar-foreground: #374151;
+  --sidebar-primary: #5b63f1;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef0ff;
+  --sidebar-accent-foreground: #5b63f1;
+  --sidebar-border: #e5e7eb;
+  --sidebar-ring: #5b63f1;
+}
+
+* { border-color: var(--border); }
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  height: 100vh;
+  overflow: hidden;
+  margin: 0;
+}
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 10px; }
+
+.prose pre { background: #1e1e2e; color: #cdd6f4; padding: 12px; border-radius: 8px; overflow-x: auto; font-size: 13px; }
+.prose code { font-family: 'JetBrains Mono', monospace; font-size: 0.9em; background: var(--muted); padding: 2px 6px; border-radius: 4px; color: var(--primary); }
+.prose pre code { background: none; padding: 0; color: inherit; }
+.prose table { width: 100%; border-collapse: collapse; margin: 8px 0; }
+.prose th, .prose td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.prose th { background: var(--muted); font-weight: 600; }
+.prose blockquote { border-left: 3px solid var(--primary); padding-left: 12px; color: var(--muted-foreground); margin: 8px 0; }
