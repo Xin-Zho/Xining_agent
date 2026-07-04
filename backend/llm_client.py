@@ -11,6 +11,8 @@ Ollama 启动后默认在 http://localhost:11434 提供 OpenAI 兼容 /v1 端点
 import os
 import httpx
 from openai import OpenAI
+from dotenv import load_dotenv
+load_dotenv()
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:14b")
