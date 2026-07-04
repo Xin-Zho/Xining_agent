@@ -48,18 +48,20 @@ export default function App() {
     const container = msgEndRef.current?.parentElement
     if (!container) return
     const timer = setTimeout(() => {
-      import('katex/dist/contrib/auto-render').then(({ default: renderMathInElement }) => {
-        renderMathInElement(container, {
-          delimiters: [
-            { left: '$$', right: '$$', display: true },
-            { left: '$', right: '$', display: false },
-            { left: '\\(', right: '\\)', display: false },
-            { left: '\\[', right: '\\]', display: true },
-          ],
-          throwOnError: false,
-        })
-      }).catch(() => {})
-    }, 100)
+      if ((window as any).renderMathInElement) {
+        try {
+          (window as any).renderMathInElement(container, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$', right: '$', display: false },
+              { left: '\\(', right: '\\)', display: false },
+              { left: '\\[', right: '\\]', display: true },
+            ],
+            throwOnError: false,
+          })
+        } catch {}
+      }
+    }, 200)
     return () => clearTimeout(timer)
   }, [messages])
 
