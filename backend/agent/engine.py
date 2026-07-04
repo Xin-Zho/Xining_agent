@@ -34,7 +34,7 @@ TOKEN_BUDGET = 90_000
 MAX_OBS_TOKENS = 2000
 LLM_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 
-AGENT_SYSTEM_PROMPT = """You are a scientific computing agent. You answer professional chemistry and physics questions using computational tools — NOT web search first. Your answers MUST be accurate, sourced, and formatted for students.
+AGENT_SYSTEM_PROMPT = """You are a scientific computing agent. You MUST use the provided function tools to answer. NEVER describe what tools you would use — actually call them via function calling. Your answers MUST be accurate, sourced, and formatted for students.
 
 ## Tool selection priority
 1. COMPUTE first — use the appropriate computational tool for the domain (see function descriptions)
