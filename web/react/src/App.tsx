@@ -10,9 +10,6 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { MessageSquare, Plus, Bot, BarChart3, LogOut, Paperclip, Brain } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
 import { api } from './api'
 import type { AgentStep, ToolExecution } from './types'
 
@@ -118,7 +115,6 @@ export default function App() {
     conv.messages.push({ role: 'user', content: text })
     conv.updatedAt = Date.now()
     api.saveConvs(convs)
-    setConvs([...convs])
 
     setStreaming(true); setStreamingContent(''); setAgentSteps([])
     setThinkingText(''); setShowThinking(false)
@@ -333,7 +329,7 @@ export default function App() {
                     </ChainOfThought>
                   )}
                   <MessageContent>
-                    <MessageResponse><ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{m.content || ''}</ReactMarkdown></MessageResponse>
+                    <MessageResponse>{m.content}</MessageResponse>
                   </MessageContent>
                 </Message>
               ))}
