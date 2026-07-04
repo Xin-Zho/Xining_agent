@@ -10,6 +10,9 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { MessageSquare, Plus, Bot, BarChart3, LogOut, Paperclip, Brain } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
 import { api } from './api'
 import type { AgentStep, ToolExecution } from './types'
 
@@ -329,7 +332,7 @@ export default function App() {
                     </ChainOfThought>
                   )}
                   <MessageContent>
-                    <MessageResponse>{m.content}</MessageResponse>
+                    <MessageResponse><ReactMarkdown remarkPlugins={[remarkMath]} rehypePlugins={[rehypeKatex]}>{m.content || ''}</ReactMarkdown></MessageResponse>
                   </MessageContent>
                 </Message>
               ))}
