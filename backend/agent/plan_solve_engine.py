@@ -386,7 +386,7 @@ class PlanSolveEngine:
             if len(cached_messages) < 2 or cached_messages[1].get("content", "")[:6] != "Tools:":
                 cached_messages.insert(1, {"role": "system", "content": self._tool_desc})
         kwargs = {
-            "model": os.environ.get("OLLAMA_MODEL", "qwen3:14b"),
+            "model": os.environ.get("OLLAMA_MODEL", "qwen2.5:7b"),
             "messages": cached_messages,
             "temperature": 0.7,
             "max_tokens": 4096,
