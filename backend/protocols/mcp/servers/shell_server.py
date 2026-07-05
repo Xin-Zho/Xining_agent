@@ -20,9 +20,9 @@ from mcp.types import Tool as MCPToolType, TextContent
 
 server = Server("shell")
 
-# 命令白名单 — 从 tools.py 共享定义
+# 命令白名单 — 从独立模块导入（backend/allowed_commands.py 无重 __init__.py 污染）
 sys.path.insert(0, PROJECT_ROOT)
-from backend.agent.tools import ALLOWED_COMMANDS
+from backend.allowed_commands import ALLOWED_COMMANDS
 
 
 # ── 工具定义 ──────────────────────────────────────────────────────────

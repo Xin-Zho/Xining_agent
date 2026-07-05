@@ -41,13 +41,8 @@ from sympy.parsing.sympy_parser import (
 # 项目根目录 (agent_learning/)
 PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
 
-# 命令白名单（shell_server import 共享）
-ALLOWED_COMMANDS = {
-    "ls", "dir", "cat", "type", "echo", "head", "tail", "wc",
-    "python", "python3", "pip", "curl", "wget", "git", "find",
-    "grep", "sort", "uniq", "date", "whoami", "pwd", "which",
-    "mkdir", "touch", "cp", "mv", "tree", "nano", "vim", "code",
-}
+# 命令白名单（从独立模块导入，避免 shell_server import 链污染）
+from ..allowed_commands import ALLOWED_COMMANDS
 
 
 # ── Tool dataclass（满足 ToolProtocol）───────────────────────────────

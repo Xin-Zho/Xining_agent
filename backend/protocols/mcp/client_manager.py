@@ -44,10 +44,8 @@ class MCPClientManager:
     def __init__(self, project_root: str):
         # Dynamic import for module names matching server filenames
         import importlib.util
-        # MCP servers disabled for now — anyio/Python 3.12 transport broken on WSL2.
-        # Local tools (14) cover all scientific computing needs.
-        # Re-enable when MCP SDK fixes cancel scope compatibility.
-        _mcp_disabled: dict[str, MCPServerConfig] = {
+        # MCP servers — re-enabled (anyio 4.14.1 + mcp 1.28.1 fixed Python 3.12 compatibility)
+        _mcp_configs: dict[str, MCPServerConfig] = {
             "filesystem-read": MCPServerConfig(
                 cmd=[sys.executable, "-m", "backend.protocols.mcp.servers.filesystem_read_server"],
                 env={"AGENT_PROJECT_ROOT": project_root},
@@ -64,12 +62,9 @@ class MCPClientManager:
                 cmd=[sys.executable, "-m", "backend.protocols.mcp.servers.document_server"],
                 env={"AGENT_PROJECT_ROOT": project_root},
             ),
-            "memory": MCPServerConfig(
-                cmd=[sys.executable, "-m", "backend.protocols.mcp.servers.memory_server"],
-                env={"AGENT_PROJECT_ROOT": project_root},
-            ),
+            # memory 已由本地 tools.py (rag_search / rag_ingest) 实现，不走 MCP
         }
-        self._server_configs: dict[str, MCPServerConfig] = {}  # empty → no MCP init
+        self._server_configs: dict[str, MCPServerConfig] = _mcp_configs
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._tools: dict[str, list[dict]] = {}
