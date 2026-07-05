@@ -1,8 +1,8 @@
 # Calculate Agent
 
-> **Branch:** `calculate_agent` | **Status:** 7/10 Tasks 完成
+> **Branch:** `calculate_agent` | **Python:** 3.12 | **MCP:** ✅ 已启用 | **Status:** 7/10 Tasks
 
-面向本科生及研究生的 **化学物理计算 Agent**。基于通用 Agent 底座改造——本地 Ollama 大模型 + sympy 符号计算 + 16 个科学工具 + 科学知识库 + 验证链。
+面向本科生及研究生的 **化学物理计算 Agent**。基于通用 Agent 底座改造——本地 Ollama 大模型 + sympy 符号计算 + 25 个工具（16 本地 + 9 MCP）+ 科学知识库 + 验证链。
 
 ---
 
@@ -20,14 +20,16 @@
                         │   └───────────┬───────────┘   │
                         │               │               │
                         │   ┌───────────▼───────────┐   │
-                        │   │  16 local tools         │   │
-                        │   │  (zero MCP dependency)  │   │
+                        │   │  25 tools               │   │
+                        │   │  16 local + 9 MCP       │   │
                         │   │                         │   │
-                        │   │  calculator (sympy)     │   │
-                        │   │  chemistry ×5           │   │
-                        │   │  physics ×5             │   │
-                        │   │  search ×2 + ingest ×1  │   │
-                        │   │  timer ×1 + KB ×2       │   │
+                        │   │  Local: calculator,     │   │
+                        │   │  chemistry×5, physics×5,│   │
+                        │   │  search×2, timer, KB×2  │   │
+                        │   │                         │   │
+                        │   │  MCP (4 servers):       │   │
+                        │   │  filesystem×2, shell,   │   │
+                        │   │  document×3             │   │
                         │   └─────────────────────────┘   │
                         └──────────────┬───────────────────┘
                                        │
@@ -66,15 +68,19 @@
 
 | 改动 | 说明 |
 |------|------|
-| MCP 全砍 | anyio/Python 3.12 不兼容，16 个工具全改本地 |
+| MCP 重新启用 | anyio 4.14.1 + mcp 1.28.1 修复 Python 3.12 兼容性，4 个 MCP Server 可用 |
 | stock_query 删除 | 计算 Agent 不需要股票 |
 | 简单路径移除 | 所有问题走完整 ReAct 循环 |
 | 硬编码清理 | 全部 `deepseek-v4-pro` → `OLLAMA_MODEL`，7 处修完 |
 | .env 加载 | load_dotenv + shell export |
+| Shell server 优化 | ALLOWED_COMMANDS 提取为独立模块，import 从 30s → 0.06s |
+| 企业级部署 | 添加 Docker Compose + Nginx + CI/CD + 部署/回滚/健康检查脚本 |
 
 ---
 
-## 工具清单（16 个）
+## 工具清单（25 个：16 本地 + 9 MCP）
+
+### 本地工具（16 个，进程内函数调用）
 
 | 工具 | 来源 | 功能 |
 |------|------|------|
@@ -94,6 +100,17 @@
 | web_search | tools | 多引擎网页搜索 |
 | web_fetch | tools | 网页抓取 + SSRF 防护 |
 | timer_set | tools | 异步延时 |
+
+### MCP 工具（9 个，独立子进程隔离）
+
+| Server | 工具 | 说明 |
+|--------|------|------|
+| filesystem-read | read_file, read_pdf, grep_files, glob_files | 文件读取 + 搜索 |
+| filesystem-write | edit_file | 文件编辑（需用户确认） |
+| shell | execute_command | 命令执行（需用户确认，白名单控制） |
+| document | create_excel, create_docx, create_document | 文档生成 |
+
+> **设计原则**：纯计算类（高频、低风险）→ 本地函数调用；IO/安全类（需隔离、需确认）→ MCP 子进程。
 
 ---
 
@@ -179,8 +196,14 @@ ollama create qwen2.5:7b -f Modelfile
 |------|------|------|
 | qwen2.5:7b 推理慢（首次 30s+） | 使用中 | 换更小模型或 GPU 升级 |
 | React 前端 LaTeX 未渲染 | 待修 | App.tsx useEffect + KaTeX CDN |
-| MCP Server 全挂（anyio 兼容性） | 已隔离 | 16 工具全改本地，不再依赖 MCP |
 | Ollama 注册表被墙 | 已绕过 | 从 ModelScope/浏览器下载 GGUF 手动导入 |
+
+### 已修复
+
+| 问题 | 修复方式 |
+|------|---------|
+| ~~MCP Server 全挂（anyio 兼容性）~~ | ✅ anyio 4.14.1 + mcp 1.28.1 修复 Python 3.12 兼容，4 个 MCP Server 恢复 |
+| ~~Shell server import 超时~~ | ✅ ALLOWED_COMMANDS 提取为独立模块 `backend/allowed_commands.py` |
 
 ---
 
@@ -189,22 +212,37 @@ ollama create qwen2.5:7b -f Modelfile
 ```
 calculate_agent/
 ├── backend/
-│   ├── server.py                    # FastAPI 入口
-│   ├── llm_client.py                # Ollama 客户端（OpenAI兼容）
-│   ├── dependencies.py              # 全局单例
+│   ├── server.py                       # FastAPI 入口
+│   ├── llm_client.py                   # Ollama 客户端（OpenAI兼容）
+│   ├── dependencies.py                 # 全局单例
+│   ├── allowed_commands.py             # 命令白名单（独立模块，轻量 import）
 │   ├── agent/
-│   │   ├── engine.py                # ReAct 引擎
-│   │   ├── tools.py                 # 16 个本地工具
-│   │   └── plan_solve_engine.py    # Plan-Solve 引擎
+│   │   ├── engine.py                   # ReAct 引擎
+│   │   ├── tools.py                    # 16 个本地工具
+│   │   └── plan_solve_engine.py       # Plan-Solve 引擎
 │   ├── memory/
-│   │   ├── science_kb_ingest.py    # 科学知识库摄入 + 检索
-│   │   └── embedding.py            # BGE 嵌入模型
-│   └── protocols/mcp/              # MCP 层（已禁用）
+│   │   ├── science_kb_ingest.py       # 科学知识库摄入 + 检索
+│   │   └── embedding.py               # BGE 嵌入模型
+│   └── protocols/mcp/                  # MCP 协议层（4 个 Server）
+│       ├── client_manager.py           # MCP 客户端（asyncio stdio）
+│       └── servers/
+│           ├── filesystem_read_server.py
+│           ├── filesystem_write_server.py
+│           ├── shell_server.py
+│           └── document_server.py
 ├── web/
-│   ├── react/                       # React 前端（Vite+TS+shadcn/ui）
-│   └── static/                      # 前端构建产物
-├── tests/                           # 32 个 pytest
-├── start_server.sh                  # 一键启动脚本
-├── Modelfile                        # Ollama 模型导入配置
-└── .env                             # 环境变量
+│   ├── react/                          # React 前端（Vite+TS+shadcn/ui）
+│   └── static/                         # 前端构建产物
+├── scripts/
+│   ├── deploy.sh                       # 零停机部署脚本
+│   ├── rollback.sh                     # 回滚脚本
+│   └── healthcheck.sh                  # 健康检查 + 自动恢复
+├── tests/                              # 32 个 pytest
+├── .gitea/workflows/deploy.yml         # CI/CD 流水线
+├── docker-compose.yml                  # 生产环境 Docker Compose
+├── Dockerfile                          # 单容器构建
+├── nginx.conf                          # 反向代理配置
+├── start_server.sh                     # 一键启动脚本
+├── Modelfile                           # Ollama 模型导入配置
+└── .env                                # 环境变量
 ```
